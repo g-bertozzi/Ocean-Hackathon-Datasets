@@ -11,6 +11,7 @@ import os, sys, argparse, hashlib, tempfile, shutil
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import requests
+import time   
 import pandas as pd
 from dotenv import load_dotenv, find_dotenv
 import onc
@@ -19,15 +20,15 @@ from onc import ONC
 load_dotenv()
 
 # API connection
-token = os.getenv("ONC_TOKEN")
-my_onc = onc.ONC(token)
+TOKEN = os.getenv("ONC_TOKEN")
+MY_ONC = onc.ONC(TOKEN)
 
 # Global variables
-china_location = "CCSS"
-mudge_location = "CRSS"
+CHINA_LOCATION = "CCSS"
+MUDGE_LOCATION = "CRSS"
 
 challenge_info = {
-    "boat-traffic": [china_location, mudge_location],
+    "boat-traffic": [CHINA_LOCATION , MUDGE_LOCATION],
 
 }
 
@@ -63,7 +64,7 @@ def get_6_month_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list
     # 'rowLimit': 18, # max 18 
     }
 
-    response = my_onc.getArchivefileByLocation(params) # Make request 
+    response = MY_ONC.getArchivefileByLocation(params) # Make request 
     files = response.get('files', []) # Isolate list of files
     n = len(files) # Number of files
 
@@ -98,12 +99,7 @@ def get_yr_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list:
 
     return all_files
 
-def download_file(file: dict, data_dir: str) -> str:
-    """
-    Downloads a single file from the ONC API and saves it to the specified directory.
-    """
-
-def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: str, data_root: str = "./data", metadata_root: str = "./metadata") -> pd.DataFrame:
+def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: str, metadata_root: str = "./metadata") -> pd.DataFrame:
     """
     Converts a list of filenames to a manifest DataFrame with additional metadata.
     
@@ -137,7 +133,7 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
         ts_str = fname.split("_")[1].replace(".jpg", "") # Extract timestamp between the first underscore and the file extension
         ts = pd.to_datetime(ts_str, utc = True)  # Convert to datetime object in UTC
 
-        path = Path(data_root) / locationCode / fname # Planned local path
+        path = Path(locationCode) / fname # Planned local path
 
         manifest_list.append({
             "timestamp": ts,
@@ -157,12 +153,69 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
     return df
 
 
+def download_from_manifest(manifest_df: pd.DataFrame, data_root: str = "./data", subsample: int | None = None, per_file_sleep: float = 0.05, retries: int = 3) -> None:
+    """
+    Download files listed in `manifest_df` (must have ['filename','path'] columns).
 
+    subsample:
+      - If given, only download the first `subsample` rows (keeps time order).
+    """
+    df = manifest_df.head(subsample) if subsample else manifest_df
+
+    ok = skipped = failed = 0
+    
+    # Iterate through the manifest DataFrame and download each file
+    for _, row in df.iterrows():
+        fname = row["filename"]
+        dest = Path (data_root) / row["path"]
+
+        # Skip if already present
+        if dest.exists():
+            skipped += 1
+            continue
+
+        # Ensure destination directory exists
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            # 1) Download to ./output/<filename>
+            MY_ONC.getFile(fname)  # <-- client call
+
+            # 2) Move into place
+            src = Path("output") / fname # Automatically goes to 'output' folder 
+            if not src.exists():
+                print(f"[ERROR] after download, missing: {src}")
+                failed += 1
+                continue
+
+            shutil.move(str(src), str(dest)) # Move the file to the correct location
+            ok += 1
+
+            # if per_file_sleep > 0: 
+            #     time.sleep(per_file_sleep)
+
+        except Exception as e:
+            print(f"[ERROR] {fname}: {e}")
+            failed += 1
+
+        # Optional periodic progress
+        total = ok + skipped + failed
+        if total % 100 == 0:
+            print(f"[progress] ok={ok} skipped={skipped} failed={failed}")
+
+    # Delte temporary 'output' directory if it exists
+    if src.exists():
+        shutil.rmtree(src)
+
+    summary = {"ok": ok, "skipped": skipped, "failed": failed}
+    print(f"[done] {summary}")
+    
+    return summary
 
 
 def main():
     # get filenames
-    china_files = get_yr_filenames(locationCode = china_location, dateFrom = "2023-09-01T00:00:00.000Z", dateTo = "2024-09-01T00:00:00.000Z")
+    china_files = get_yr_filenames(locationCode = CHINA_LOCATION, dateFrom = "2023-09-01T00:00:00.000Z", dateTo = "2024-09-01T00:00:00.000Z")
 
     # subsampled test files
     small_test_files = china_files[:5]
@@ -173,9 +226,10 @@ def main():
 
 
     # build directory structure?
-    manifest_df = filenames_to_manifest(filenames = medium_test_files, locationCode = china_location, challenge = "boat-traffic", data_root = "./data")
+    manifest_df = filenames_to_manifest(filenames = medium_test_files, locationCode = CHINA_LOCATION, challenge = "boat-traffic")
 
     # store files?
+    download_from_manifest(manifest_df = manifest_df, subsample = 10)
 
 if __name__ == "__main__":
     main()
