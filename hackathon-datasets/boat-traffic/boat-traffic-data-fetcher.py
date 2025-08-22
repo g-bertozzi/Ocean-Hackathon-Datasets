@@ -52,6 +52,7 @@ CHINA_LOCATION = "CCSS"
 MUDGE_LOCATION = "CRSS"
 
 API_CALL_N = 0 # Count of API calls made
+NEW_MANIFEST = True
 
 PROV_INFO = {
     "challenge": "boat-traffic",
@@ -158,7 +159,7 @@ def get_yr_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list:
     all_files.extend(files2)
 
     # NOTE: debugging output
-    print(f"TOTAL for year: {len(all_files)}")
+    print(f"{locationCode} TOTAL for year: {len(all_files)}")
 
     return all_files
 
@@ -194,10 +195,19 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
     # Convert list of dicts to DataFrame
     df = pd.DataFrame(manifest_list)
 
+    # Either append or start a fresh manifest depending on API call number
+    global NEW_MANIFEST
+    if NEW_MANIFEST: # Overwrite existing manifest
+        mode = "w" 
+        header = True 
+    else: # Append to existing manifest
+        mode = "a"
+        header = False
+
     # Save to CSV
     metadata_path = Path(metadata_root) / "manifest.csv" # Build metadata path
-    os.makedirs(metadata_path.parent, exist_ok=True) # Ensure the parent directory exists
-    df.to_csv(metadata_path, index=False) # Save CSV
+    os.makedirs(metadata_path.parent, exist_ok = True) # Ensure the parent directory exists
+    df.to_csv(metadata_path, mode = mode, header = header,  index = False) # Save CSV
 
     # Isolate info for provenance - NOTE: DONE ONLY ONCE for all API calls together
     global PROV_INFO
@@ -205,6 +215,8 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
         "manifest_path": str(metadata_path),
         "manifest_schema": ['timestamp', 'locationCode', 'filename', 'path'],
     }
+
+    NEW_MANIFEST = False
 
     return df
 
@@ -274,7 +286,7 @@ def download_from_manifest(manifest_df: pd.DataFrame, data_root: str = "./data",
     
     return
 
-def make_prov(metadata_root: str = "./metadata"):
+def make_prov(metadata_root: str = "./metadata") -> None:
     """
     Save provenance info dictionary to a YAML file.
     """
@@ -285,7 +297,6 @@ def make_prov(metadata_root: str = "./metadata"):
         yaml.dump(PROV_INFO, f, sort_keys=False, default_flow_style=False)
     print(f"[saved provenance] {output_path}") # NOTE: debug output
 
-    
 def main():
     yr_start = "2023-09-01T00:00:00.000Z"
     yr_end = "2024-09-01T00:00:00.000Z"
@@ -309,7 +320,6 @@ def main():
     l_step = math.ceil(len(china_files) / 10000)  
     large_test_files = china_files[::l_step]
 
-    # TODO: fix manifest so that it appends for multiple locations
     # Build manifest
     china_manifest_df = filenames_to_manifest(filenames = china_files, locationCode = CHINA_LOCATION, challenge = "boat-traffic")
     mudge_manifest_df = filenames_to_manifest(filenames = mudge_files, locationCode = MUDGE_LOCATION, challenge = "boat-traffic")
@@ -319,9 +329,9 @@ def main():
  
     # print(PROV_INFO)
 
-    # store files?
-    # download_from_manifest(manifest_df = china_manifest_df, subsample= 10)
-    # download_from_manifest(manifest_df = mudge_manifest_df, subsample= 10)
+    # Store files
+    download_from_manifest(manifest_df = china_manifest_df, subsample= 10)
+    download_from_manifest(manifest_df = mudge_manifest_df, subsample= 10)
 
 
 
