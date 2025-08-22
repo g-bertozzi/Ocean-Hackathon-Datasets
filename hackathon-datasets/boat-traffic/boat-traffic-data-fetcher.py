@@ -18,28 +18,25 @@ boat-traffic/
         ...
     metadata/
         manifest.csv          # 4 columns: timestamp, locationCode, filename, path
+        provenance.yaml 
 
 Size estimate: 28.5 GB
 - 105,120 files in 1 year (every 5 minutes)
 - Upper lim file size: 135606 bytes
 
-- Upper lim for challenge: 105120 x 135606 x 2 = 28,509,805,440 bytes = 28.5 GB 
+- Upper memory lim for challenge: 105120 x 135606 x 2 = 28,509,805,440 bytes = 28.5 GB 
 
 """
-
-import json
+# SDKs
 import yaml
 import urllib
-import os, sys, argparse, hashlib, tempfile, shutil
+import os, shutil
 from pathlib import Path
-from datetime import datetime, timezone, timedelta
-import requests
-import time   
+from datetime import UTC, datetime, timedelta
 import math
 import pandas as pd
-from dotenv import load_dotenv, find_dotenv
+from dotenv import load_dotenv
 import onc
-from onc import ONC
 
 load_dotenv()
 
@@ -70,6 +67,7 @@ PROV_INFO = {
     "manifest": {
         "manifest_path": "",
         "manefist_schema": [], # ['timestamp', 'locationCode', 'filename', 'path']
+        "last_updated": "" # Now
     }
 }
 
@@ -123,7 +121,7 @@ def get_6_month_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list
     global API_CALL_N, PROV_INFO
 
     PROV_INFO["api"][f"call_{API_CALL_N}"] = {
-    "endpoint": url_parsed.path,
+    "endpoint": url_parsed.path.replace("/api", "", 1),
     "parameters": params_minus_token,
     "queryUrl": query_url,
     "citation": citations_info['citation'],
@@ -159,7 +157,7 @@ def get_yr_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list:
     all_files.extend(files2)
 
     # NOTE: debugging output
-    print(f"{locationCode} TOTAL for year: {len(all_files)}")
+    print(f"{locationCode} YEAR TOTAL: {len(all_files)} files")
 
     return all_files
 
@@ -210,13 +208,21 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
     df.to_csv(metadata_path, mode = mode, header = header,  index = False) # Save CSV
 
     # Isolate info for provenance - NOTE: DONE ONLY ONCE for all API calls together
-    global PROV_INFO
-    PROV_INFO["manifest"] = {
-        "manifest_path": str(metadata_path),
-        "manifest_schema": ['timestamp', 'locationCode', 'filename', 'path'],
-    }
+    if not NEW_MANIFEST:
+        global PROV_INFO
+        PROV_INFO["manifest"] = {
+            "manifest_path": str(metadata_path),
+            "manifest_schema": ['timestamp', 'locationCode', 'filename', 'path'],
+            "last_updated": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        }
 
-    NEW_MANIFEST = False
+    # NOTE: debug output
+    # if NEW_MANIFEST:
+    #     print("Created new manifest.")
+    # else:
+    #     print("Updated existing manifest.")
+
+    NEW_MANIFEST = False # Set to false for next location
 
     return df
 
@@ -326,13 +332,10 @@ def main():
 
     # Build prov
     make_prov()
- 
-    # print(PROV_INFO)
 
     # Store files
     download_from_manifest(manifest_df = china_manifest_df, subsample= 10)
     download_from_manifest(manifest_df = mudge_manifest_df, subsample= 10)
-
 
 
 if __name__ == "__main__":
