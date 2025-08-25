@@ -87,9 +87,6 @@ PROV_INFO = {
 }
 
 # Functions
-
-
-
 def calculate_difference(date1: str, date2: str) -> int:
     """
     Calculates the difference in days between two dates in ISO 8601 format.
@@ -263,88 +260,36 @@ def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsamp
 
     ok = skipped = failed = 0
 
+    # Different clients for different output folders
+    if locationCode == "CCSS":
+        client = CCSS_CLIENT
+    elif locationCode == "CRSS":
+        client  = CRSS_CLIENT
+    else: 
+        client = MY_ONC
+
     for _, row in df.iterrows():
         # Build relative path: locationCode/filename
-        rel_path = Path(row["path"])
-        dest = MY_ONC.outPath / rel_path
+        fname= Path(row["filename"])
+        dest = client.outPath / fname
+        print(f"dest: {dest}")
 
         # Skip if already downloaded
         if dest.exists():
             skipped += 1
             continue
 
-        # Ensure subfolder exists
-        # dest.parent.mkdir(parents=True, exist_ok=True)
-
         try:
-            # Different clients for different output folders
-            if locationCode == "CCSS":
-                CCSS_CLIENT.getFile(str(row["filename"]))
-            elif locationCode == "CRSS":
-                CRSS_CLIENT.getFile(str(row["filename"]))
-            else: 
-                MY_ONC.getFile(str(row["filename"]))
+            client.getFile(str(fname))
 
             ok += 1
         except Exception as e:
-            print(f"[ERROR] {row["filename"]}: {e}")
+            print(f"[ERROR] {fname}: {e}")
             failed += 1
 
     print(f"[done] ok={ok} skipped={skipped} failed={failed}")
 
-    # df = manifest_df.head(subsample) if subsample else manifest_df
-
-    # ok = skipped = failed = 0
-    
-    # # Iterate through the manifest DataFrame and download each file
-    # for _, row in df.iterrows():
-    #     fname = row["filename"]
-    #     dest = Path (row["path"])
-
-    #     # Skip if already present
-    #     if dest.exists():
-    #         skipped += 1
-    #         continue
-
-    #     # Ensure destination directory exists
-    #     dest.parent.mkdir(parents=True, exist_ok=True)
-
-    #     try:
-    #         # 1) Download (NOTE: automatically goes to ./output/<filename> ?)
-    #         MY_ONC.getFile(fname)
-
-    #         # 2) Move into place
-    #         src = Path("output") / fname # Automatic download location ?
-    #         if not src.exists():
-    #             print(f"[ERROR] after download, missing: {src}")
-    #             failed += 1
-    #             continue
-
-    #         shutil.move(str(src), str(dest)) # Move the file to the correct location
-    #         ok += 1
-
-    #         # if per_file_sleep > 0: 
-    #         #     time.sleep(per_file_sleep)
-
-    #     except Exception as e:
-    #         print(f"[ERROR] {fname}: {e}")
-    #         failed += 1
-
-    #     # Optional periodic progress
-    #     total = ok + skipped + failed
-    #     if total % 100 == 0:
-    #         print(f"[progress] ok={ok} skipped={skipped} failed={failed}")
-
-    # # Delete temporary 'output' directory if it exists
-    # output_dir = Path("output")
-    # if output_dir.exists():
-    #     shutil.rmtree(output_dir)
-
-    # # Print summary
-    # summary = {"ok": ok, "skipped": skipped, "failed": failed}
-    # print(f"[done] {summary}")
-    
-    # return
+    return
 
 def make_prov(metadata_root: str = "./metadata") -> None:
     """
@@ -361,9 +306,6 @@ def make_prov(metadata_root: str = "./metadata") -> None:
     print(f"[saved provenance] {output_path}") # NOTE: debug output
 
 def main():
-
-# usage
-
 
     # Chosen year
     yr_start = "2023-09-01T00:00:00.000Z"
@@ -396,8 +338,8 @@ def main():
     make_prov()
 
     # Store files - tester for only 10 files
-    download_from_manifest(manifest_df = china_manifest_df, locationCode="CCSS", subsample= 10)
-    download_from_manifest(manifest_df = mudge_manifest_df, locationCode="CRSS", subsample= 10)
+    download_from_manifest(manifest_df = china_manifest_df, locationCode = CHINA_LOCATION, subsample= 10)
+    download_from_manifest(manifest_df = mudge_manifest_df, locationCode = MUDGE_LOCATION, subsample= 10)
 
 
 if __name__ == "__main__":
