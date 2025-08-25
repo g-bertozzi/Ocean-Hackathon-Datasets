@@ -17,8 +17,8 @@ boat-traffic/
         <ONC_filename>.jpg
         ...
     metadata/
-        manifest.csv          # 4 columns: timestamp, locationCode, filename, path
-        provenance.yaml 
+        manifest.csv          # 4 columns: timestamp, locationCode, filename, (local) path
+        provenance.yaml       # challenge description, api call descriptions
 
 Size estimate: 28.5 GB
 - 105,120 files in 1 year (every 5 minutes)
@@ -40,9 +40,24 @@ import onc
 
 load_dotenv()
 
-# API connection
+# --- Project-root based paths ---
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_ROOT = PROJECT_ROOT / "data" 
+METADATA_ROOT = PROJECT_ROOT / "metadata"
+
+CCSS_ROOT = DATA_ROOT / "CCSS"
+CRSS_ROOT = DATA_ROOT / "CRSS"
+
+# Make sure folders exist
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+# --- ONC API client setup ---
 TOKEN = os.getenv("ONC_TOKEN")
-MY_ONC = onc.ONC(TOKEN)
+MY_ONC = onc.ONC(TOKEN, outPath=str(Path(DATA_ROOT)))
+
+CRSS_CLIENT = onc.ONC(TOKEN, outPath=str(CRSS_ROOT))
+CCSS_CLIENT = onc.ONC(TOKEN, outPath=str(CCSS_ROOT))
 
 # Global variables
 CHINA_LOCATION = "CCSS"
@@ -55,7 +70,7 @@ PROV_INFO = {
     "challenge": "boat-traffic",
     "description": "1 year of still images (every 5 minutes) from shore station cameras at China Creek and Cape Mudge",
     "api": {
-        # "call_{API_CALL_N}": {
+        # "call_1": {
         #     "endpoint": "",
         #     "parameters": {}, # locationCode, deviceCategoryCode, fileExtension, dateFrom, dateTo
         #     "queryUrl": "",
@@ -72,6 +87,9 @@ PROV_INFO = {
 }
 
 # Functions
+
+
+
 def calculate_difference(date1: str, date2: str) -> int:
     """
     Calculates the difference in days between two dates in ISO 8601 format.
@@ -80,6 +98,8 @@ def calculate_difference(date1: str, date2: str) -> int:
     - date1 and date2 are strings in ISO 8601 format (e.g., "2023-09-01T00:00:00.000Z")
     - date1 is before date2
 
+    Inputs:
+    Output:
     """
     # Convert string inputs defined in the params above to datetime objects
     start_time = datetime.fromisoformat(date1.replace("Z", "+00:00"))
@@ -120,7 +140,7 @@ def get_6_month_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list
     # Update global PROV_INFO with API call details
     global API_CALL_N, PROV_INFO
 
-    PROV_INFO["api"][f"call_{API_CALL_N}"] = {
+    PROV_INFO["api"][f"call_{API_CALL_N + 1}"] = {
     "endpoint": url_parsed.path.replace("/api", "", 1),
     "parameters": params_minus_token,
     "queryUrl": query_url,
@@ -141,6 +161,9 @@ def get_6_month_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list
 def get_yr_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list:
     """
     Returns a list of filenames for still images from the video camera at the specified location for a full year.
+
+    Inputs:
+    Output:
     """
     all_files = []
     
@@ -161,7 +184,7 @@ def get_yr_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list:
 
     return all_files
 
-def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: str, metadata_root: str = "./metadata") -> pd.DataFrame:
+def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: str) -> pd.DataFrame:
     """
     Converts a list of filenames to a manifest DataFrame with additional metadata.
     
@@ -193,7 +216,7 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
     # Convert list of dicts to DataFrame
     df = pd.DataFrame(manifest_list)
 
-    # Either append or start a fresh manifest depending on API call number
+    # Either append or start a fresh manifest depending on API call
     global NEW_MANIFEST
     if NEW_MANIFEST: # Overwrite existing manifest
         mode = "w" 
@@ -203,7 +226,7 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
         header = False
 
     # Save to CSV
-    metadata_path = Path(metadata_root) / "manifest.csv" # Build metadata path
+    metadata_path = Path(METADATA_ROOT) / "manifest.csv" # Build metadata path
     os.makedirs(metadata_path.parent, exist_ok = True) # Ensure the parent directory exists
     df.to_csv(metadata_path, mode = mode, header = header,  index = False) # Save CSV
 
@@ -226,75 +249,109 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
 
     return df
 
-def download_from_manifest(manifest_df: pd.DataFrame, data_root: str = "./data", subsample: int | None = None, per_file_sleep: float = 0.05) -> None:
+def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsample: int | None = None, per_file_sleep: float = 0.05) -> None:
     """
-    Download files listed in `manifest_df` (must have ['filename','path'] columns).
+    Download files listed in `manifest_df`.
 
     subsample:
       - If given, only download the first `subsample` rows (keeps time order).
 
     Inputs:
-
     Output:
-
     """
     df = manifest_df.head(subsample) if subsample else manifest_df
 
     ok = skipped = failed = 0
-    
-    # Iterate through the manifest DataFrame and download each file
-    for _, row in df.iterrows():
-        fname = row["filename"]
-        dest = Path (data_root) / row["path"]
 
-        # Skip if already present
+    for _, row in df.iterrows():
+        # Build relative path: locationCode/filename
+        rel_path = Path(row["path"])
+        dest = MY_ONC.outPath / rel_path
+
+        # Skip if already downloaded
         if dest.exists():
             skipped += 1
             continue
 
-        # Ensure destination directory exists
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Ensure subfolder exists
+        # dest.parent.mkdir(parents=True, exist_ok=True)
 
         try:
-            # 1) Download to ./output/<filename>
-            MY_ONC.getFile(fname)  # <-- client call
+            # Different clients for different output folders
+            if locationCode == "CCSS":
+                CCSS_CLIENT.getFile(str(row["filename"]))
+            elif locationCode == "CRSS":
+                CRSS_CLIENT.getFile(str(row["filename"]))
+            else: 
+                MY_ONC.getFile(str(row["filename"]))
 
-            # 2) Move into place
-            src = Path("output") / fname # Automatically goes to 'output' folder 
-            if not src.exists():
-                print(f"[ERROR] after download, missing: {src}")
-                failed += 1
-                continue
-
-            shutil.move(str(src), str(dest)) # Move the file to the correct location
             ok += 1
-
-            # if per_file_sleep > 0: 
-            #     time.sleep(per_file_sleep)
-
         except Exception as e:
-            print(f"[ERROR] {fname}: {e}")
+            print(f"[ERROR] {row["filename"]}: {e}")
             failed += 1
 
-        # Optional periodic progress
-        total = ok + skipped + failed
-        if total % 100 == 0:
-            print(f"[progress] ok={ok} skipped={skipped} failed={failed}")
+    print(f"[done] ok={ok} skipped={skipped} failed={failed}")
 
-    # Delte temporary 'output' directory if it exists
-    output_dir = Path("output")
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
+    # df = manifest_df.head(subsample) if subsample else manifest_df
 
-    # Print summary
-    summary = {"ok": ok, "skipped": skipped, "failed": failed}
-    print(f"[done] {summary}")
+    # ok = skipped = failed = 0
     
-    return
+    # # Iterate through the manifest DataFrame and download each file
+    # for _, row in df.iterrows():
+    #     fname = row["filename"]
+    #     dest = Path (row["path"])
+
+    #     # Skip if already present
+    #     if dest.exists():
+    #         skipped += 1
+    #         continue
+
+    #     # Ensure destination directory exists
+    #     dest.parent.mkdir(parents=True, exist_ok=True)
+
+    #     try:
+    #         # 1) Download (NOTE: automatically goes to ./output/<filename> ?)
+    #         MY_ONC.getFile(fname)
+
+    #         # 2) Move into place
+    #         src = Path("output") / fname # Automatic download location ?
+    #         if not src.exists():
+    #             print(f"[ERROR] after download, missing: {src}")
+    #             failed += 1
+    #             continue
+
+    #         shutil.move(str(src), str(dest)) # Move the file to the correct location
+    #         ok += 1
+
+    #         # if per_file_sleep > 0: 
+    #         #     time.sleep(per_file_sleep)
+
+    #     except Exception as e:
+    #         print(f"[ERROR] {fname}: {e}")
+    #         failed += 1
+
+    #     # Optional periodic progress
+    #     total = ok + skipped + failed
+    #     if total % 100 == 0:
+    #         print(f"[progress] ok={ok} skipped={skipped} failed={failed}")
+
+    # # Delete temporary 'output' directory if it exists
+    # output_dir = Path("output")
+    # if output_dir.exists():
+    #     shutil.rmtree(output_dir)
+
+    # # Print summary
+    # summary = {"ok": ok, "skipped": skipped, "failed": failed}
+    # print(f"[done] {summary}")
+    
+    # return
 
 def make_prov(metadata_root: str = "./metadata") -> None:
     """
     Save provenance info dictionary to a YAML file.
+
+    Inputs:
+    Output:
     """
     output_path = Path(metadata_root) / "provenance.yaml"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -304,6 +361,11 @@ def make_prov(metadata_root: str = "./metadata") -> None:
     print(f"[saved provenance] {output_path}") # NOTE: debug output
 
 def main():
+
+# usage
+
+
+    # Chosen year
     yr_start = "2023-09-01T00:00:00.000Z"
     yr_end = "2024-09-01T00:00:00.000Z"
 
@@ -311,20 +373,20 @@ def main():
     china_files = get_yr_filenames(locationCode = CHINA_LOCATION, dateFrom = yr_start, dateTo = yr_end)
     mudge_files = get_yr_filenames(locationCode = MUDGE_LOCATION, dateFrom = yr_start, dateTo = yr_end)
 
-    # Small test files
-    small_test_files = china_files[:5]
+    # # Small test files
+    # small_test_files = china_files[:5]
 
-    # S/M test files
-    sm_step = math.ceil(len(china_files) / 200)  
-    sm_test_files = china_files[::sm_step]
+    # # S/M test files
+    # sm_step = math.ceil(len(china_files) / 200)  
+    # sm_test_files = china_files[::sm_step]
 
-    # Medium test files
-    m_step = math.ceil(len(china_files) / 1000)  
-    medium_test_files = china_files[::m_step]
+    # # Medium test files
+    # m_step = math.ceil(len(china_files) / 1000)  
+    # medium_test_files = china_files[::m_step]
 
-    # Large test files
-    l_step = math.ceil(len(china_files) / 10000)  
-    large_test_files = china_files[::l_step]
+    # # Large test files
+    # l_step = math.ceil(len(china_files) / 10000)  
+    # large_test_files = china_files[::l_step]
 
     # Build manifest
     china_manifest_df = filenames_to_manifest(filenames = china_files, locationCode = CHINA_LOCATION, challenge = "boat-traffic")
@@ -333,9 +395,9 @@ def main():
     # Build prov
     make_prov()
 
-    # Store files
-    download_from_manifest(manifest_df = china_manifest_df, subsample= 10)
-    download_from_manifest(manifest_df = mudge_manifest_df, subsample= 10)
+    # Store files - tester for only 10 files
+    download_from_manifest(manifest_df = china_manifest_df, locationCode="CCSS", subsample= 10)
+    download_from_manifest(manifest_df = mudge_manifest_df, locationCode="CRSS", subsample= 10)
 
 
 if __name__ == "__main__":
