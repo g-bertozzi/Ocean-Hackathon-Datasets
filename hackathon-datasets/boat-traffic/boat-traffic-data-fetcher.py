@@ -37,6 +37,7 @@ import math
 import pandas as pd
 from dotenv import load_dotenv
 import onc
+import time
 
 load_dotenv()
 
@@ -82,7 +83,7 @@ PROV_INFO = {
     },
     "manifest": {
         "manifest_path": "",
-        "manefist_schema": [], # ['timestamp', 'locationCode', 'filename', 'path']
+        "manefist_schema": [], # ['timestamp', 'locationCode', 'deviceCategoryCode', 'deviceCode', 'filename', 'path']
         "last_updated": "" # Now
     }
 }
@@ -119,7 +120,7 @@ def get_6_month_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list
     'dateFrom': dateFrom,
     'dateTo': dateTo,
     'deviceCategoryCode': "VIDEOCAM",
-    'fileExtension': "jpg", # 'jpg' for still images
+    'fileExtension': ".jpg", # 'jpg' for still images
     # 'returnOptions': "all" # NOTE: debugging to find file size demands
     }
 
@@ -133,7 +134,8 @@ def get_6_month_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list
     url_parsed = urllib.parse.urlparse(query_url) # Parse the URL and break into components
 
     params_minus_token = params.copy()
-    del params_minus_token['token']
+    # del params_minus_token['token']
+    params_minus_token.pop("token", None)
     
     # Update global PROV_INFO with API call details
     global API_CALL_N, PROV_INFO
@@ -194,7 +196,8 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
     - 'filename': the name of the file
     - 'path': planned local download path for the file
     """
-   # Create list of dictionaries: list is dataframe, each dict is a row
+    print(f"Creating manifest for {locationCode}.")
+    # Create list of dictionaries: list is dataframe, each dict is a row
     manifest_list = []
     
     for fname in filenames:
@@ -202,11 +205,14 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
         ts_str = fname.split("_")[1].replace(".jpg", "") # Extract timestamp between the first underscore and the file extension
         ts = pd.to_datetime(ts_str, utc = True)  # Convert to datetime object in UTC
 
+        deviceCode = fname.split("_")[0]
         path = Path(locationCode) / fname # Planned local path
 
         manifest_list.append({
             "timestamp": ts,
             "locationCode": locationCode,
+            "deviceCategoryCode": "VIDEOCAM",
+            "deviceCode": deviceCode,
             "filename": fname,
             "path": str(path)
         })
@@ -244,6 +250,8 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
     #     print("Updated existing manifest.")
 
     NEW_MANIFEST = False # Set to false for next location
+    print(f"Finished creating manifest for {locationCode}.")
+    print(f"[saved manifest for {locationCode}] {metadata_path}")
 
     return df
 
@@ -257,6 +265,8 @@ def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsamp
     Inputs:
     Output:
     """
+    print(f"Starting to download files for {locationCode}.")
+
     df = manifest_df.head(subsample) if subsample else manifest_df
 
     ok = skipped = failed = 0
@@ -273,7 +283,7 @@ def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsamp
         # Build relative path: locationCode/filename
         fname= Path(row["filename"])
         dest = client.outPath / fname
-        print(f"dest: {dest}")
+        # print(f"dest: {dest}")
 
         # Skip if already downloaded
         if dest.exists():
@@ -287,8 +297,12 @@ def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsamp
         except Exception as e:
             print(f"[ERROR] {fname}: {e}")
             failed += 1
+        
+        # Sleep between downloads
+        time.sleep(0.3)
 
     print(f"[done] ok={ok} skipped={skipped} failed={failed}")
+    print(f"Finished downloading files for {locationCode}.")
 
     return
 
