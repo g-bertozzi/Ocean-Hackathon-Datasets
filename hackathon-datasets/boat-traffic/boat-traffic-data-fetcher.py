@@ -56,6 +56,7 @@ METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 TOKEN = os.getenv("ONC_TOKEN")
 MY_ONC = onc.ONC(TOKEN, outPath=str(Path(DATA_ROOT)))
 
+# Clients for different locations - set different output directories
 CRSS_CLIENT = onc.ONC(TOKEN, outPath=str(CRSS_ROOT))
 CCSS_CLIENT = onc.ONC(TOKEN, outPath=str(CCSS_ROOT))
 
