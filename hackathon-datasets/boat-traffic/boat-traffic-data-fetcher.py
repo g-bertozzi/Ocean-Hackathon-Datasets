@@ -42,7 +42,8 @@ import time
 load_dotenv()
 
 # --- Project-root based paths ---
-PROJECT_ROOT = Path(__file__).resolve().parent
+# PROJECT_ROOT = Path(__file__).resolve().parent # NOTE: for testing
+PROJECT_ROOT = Path("/Volumes/Ocean-Hackathon/boat-traffic") # NOTE: for the actual data downloads
 DATA_ROOT = PROJECT_ROOT / "data" 
 METADATA_ROOT = PROJECT_ROOT / "metadata"
 
@@ -353,8 +354,12 @@ def main():
     make_prov()
 
     # Store files - tester for only 10 files
-    download_from_manifest(manifest_df = china_manifest_df, locationCode = CHINA_LOCATION, subsample= 10)
-    download_from_manifest(manifest_df = mudge_manifest_df, locationCode = MUDGE_LOCATION, subsample= 10)
+    # download_from_manifest(manifest_df = china_manifest_df, locationCode = CHINA_LOCATION, subsample= 10)
+    # download_from_manifest(manifest_df = mudge_manifest_df, locationCode = MUDGE_LOCATION, subsample= 10)
+
+    # REAL DEAL DOWNLOAD
+    download_from_manifest(manifest_df = china_manifest_df, locationCode = CHINA_LOCATION)
+    download_from_manifest(manifest_df = mudge_manifest_df, locationCode = MUDGE_LOCATION)
 
 
 if __name__ == "__main__":
