@@ -46,7 +46,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent # NOTE: for testing
 # PROJECT_ROOT = Path("/Volumes/Ocean-Hackathon/coastal-radar") # NOTE: for the actual data downloads
 DATA_ROOT = PROJECT_ROOT / "data/vectors" 
 METADATA_ROOT = PROJECT_ROOT / "metadata/vectors"
-LOCAL_MAN_PATH = Path("/Users/catherinebertozzi/hackathon-datasets/coastal-radar/metadata/manifest.csv")
+
+# Authoritative challenge manifest (SMB / repo copy)
+SMB_MAN_PATH = Path("/Users/catherinebertozzi/manifest.csv") # CHANGE FOR REAL
+
+# Local working manifest (safe to update/overwrite on reruns)
+LOCAL_MAN_PATH = Path("/Users/catherinebertozzi/hackathon-datasets/coastal-radar/metadata/vectors/manifest.csv")
 
 
 # Make sure folders exist
@@ -175,8 +180,8 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
         })
     
     # Convert list of dicts to DataFrame
-    df = pd.DataFrame(manifest_list)
-
+    return pd.DataFrame(manifest_list)
+    """
     # Either append or start a fresh manifest depending on API call
     global NEW_MANIFEST
     if NEW_MANIFEST: # Overwrite existing manifest
@@ -211,6 +216,32 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
     print(f"[saved manifest for {locationCode}] {metadata_path}")
 
     return df
+    """
+
+
+def update_local_manifest(new_manifest_df: pd.DataFrame):
+    """
+    Merge new manifest rows into the global LOCAL_MAN_PATH manifest.
+    Deduplicates on 'timestamp' to allow re-running over overlapping time windows.
+    """
+    if LOCAL_MAN_PATH.exists():
+        old_df = pd.read_csv(LOCAL_MAN_PATH, parse_dates=["timestamp"])
+        print(f"[DEBUG] Loaded {len(old_df)} existing rows from {LOCAL_MAN_PATH}")
+    else:
+        old_df = pd.DataFrame(columns=new_manifest_df.columns)
+        print(f"[DEBUG] No existing manifest at {LOCAL_MAN_PATH}, starting fresh")
+
+    # Union + dedupe
+    combined = pd.concat([old_df, new_manifest_df], ignore_index=True)
+    combined = combined.drop_duplicates(subset=["timestamp"], keep="last")
+    combined = combined.sort_values("timestamp")
+
+    # Save back to the global path
+    combined.to_csv(LOCAL_MAN_PATH, index=False)
+    print(f"[Manifest updated] {len(combined)} rows now in {LOCAL_MAN_PATH}")
+
+    return combined
+
 
 def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsample: int | None = None, per_file_sleep: float = 0.3) -> None:
     """
@@ -244,6 +275,7 @@ def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsamp
             VECTOR_CLIENT.getFile(str(fname))
             df.at[i, "status"] = "done"
             ok += 1
+
         except Exception as e:
             print(f"[ERROR] {fname}: {e}")
             failed += 1
@@ -285,8 +317,8 @@ def make_prov() -> None:
 def main():
 
     # Chosen year
-    yr_start = "2023-01-01T00:00:00.000Z"
-    yr_end = "2024-01-01T00:00:00.000Z"
+    yr_start = "2023-01-02T00:00:00.000Z"
+    yr_end = "2023-01-03T00:00:00.000Z"
 
     # get filenames
     sog_files = get_filenames(locationCode = SOG_LOCATIONCODE, dateFrom = yr_start, dateTo = yr_end)
@@ -313,11 +345,13 @@ def main():
     make_prov()
 
     # Store files - tester for only 10 files
-    download_from_manifest(manifest_df = sog_manifest_df, locationCode = SOG_LOCATIONCODE, subsample= 10)
+    # download_from_manifest(manifest_df = sog_manifest_df, locationCode = SOG_LOCATIONCODE, subsample= 25)
 
 
     # REAL DEAL DOWNLOAD
-    # download_from_manifest(manifest_df = sog_manifest_df, locationCode = SOG_LOCATIONCODE)
+    download_from_manifest(manifest_df = sog_manifest_df, locationCode = SOG_LOCATIONCODE)
+
+    final_local_manifest = update_local_manifest(sog_manifest_df)
 
 
 if __name__ == "__main__":
