@@ -72,7 +72,8 @@ def get_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list[str]:
     filenames = response.get('files', []) # Isolate list of files
     n = len(filenames) # Number of files
 
-    print(f"[{locationCode} total]: {len(filenames)} files")
+    print(f"[get_filenames] Requesting files from ONC for location {locationCode} between {dateFrom} and {dateTo}.")
+    print(f"[get_filenames] Total number of files for this call: {len(filenames)} files")
 
     return filenames
 
@@ -80,7 +81,7 @@ def filenames_to_file_info(filenames: list[str], locationCode: str) -> pd.DataFr
     """ Converts list of filenames to a DataFrame with metadata parsed from filenames."""
 
     # Parse filenames to extract metadata and build rows
-    print(f"Creating information table for {locationCode}.")
+    print(f"[filenames_to_file_info] Creating information table for files in this call.")
 
     # Create list of dictionaries: list is dataframe, each dict is a row
     manifest_list = []
@@ -108,8 +109,6 @@ def filenames_to_file_info(filenames: list[str], locationCode: str) -> pd.DataFr
     return file_info_df
 
 # THREAD FUNCTIONS
-
-
 def update_manifest_df(file_info: dict, success: bool) -> None:
     """
     Updates the global manifest_df with:
@@ -144,14 +143,14 @@ def update_manifest_df(file_info: dict, success: bool) -> None:
             manifest_df = pd.concat([manifest_df, pd.DataFrame([new_row])], ignore_index=True)
         
 
-def periodic_manifest_save(interval=180) -> None:
+def periodic_manifest_save(interval=90) -> None:
     """Periodically saves the manifest DataFrame to CSV every 'interval' seconds."""
     while True:
         time.sleep(interval)
         with manifest_lock:
             manifest_df.to_csv(MANIFEST_PATH, index=False)
-            print(f"[Manifest] Saved at {datetime.now()}: "
-                  f"Processed: {FILES_SUCCESS + FILES_FAILED}, Success: {FILES_SUCCESS}, Failed: {FILES_FAILED}")
+            print(f"[periodic_manifest_save] Saved at {datetime.now()}: "
+                  f"[periodic_manifest_save] Processed: {FILES_SUCCESS + FILES_FAILED}, Success: {FILES_SUCCESS}, Failed: {FILES_FAILED}")
 
 def download_file(file_info: dict) -> bool:
     """Download the file and return True if successful, False otherwise."""
@@ -164,7 +163,7 @@ def download_file(file_info: dict) -> bool:
         return True
     
     except Exception as e:
-        print(f"Download failed for {file_info['filename']}: {e}")
+        print(f"[download_file] Download failed for {file_info['filename']}: {e}")
         return False
     
 def worker():
@@ -186,16 +185,15 @@ def worker():
                 FILES_FAILED += 1
 
         DOWNLOAD_QUEUE.task_done()   
-    
-
 
 def main():
     """"""
     start_time = time.time()  # Record start time
-
+    print(f"[Main] Starting multithreaded vector data fetcher at {start_time}.")
+    
     # 1. Get list of filenames
-    yr_start = "2023-01-01T00:00:00.000Z"
-    yr_end = "2023-01-04T00:00:00.000Z"
+    yr_start = "2023-02-01T00:00:00.000Z"
+    yr_end = "2023-02-08T00:00:00.000Z"
 
     filenames = get_filenames(locationCode=SOG_LOCATION, dateFrom=yr_start, dateTo=yr_end) # List of filenames from ONC
     file_info = filenames_to_file_info(filenames=filenames, locationCode=SOG_LOCATION) # DataFrame with metadata parsed from filenames
@@ -216,10 +214,11 @@ def main():
             DOWNLOAD_QUEUE.put(row) # Then enqueue NOTE: THREAD SAFE
 
     # Start periodic manifest save thread
-    threading.Thread(target=periodic_manifest_save, args=(180,), daemon=True).start()
+    threading.Thread(target=periodic_manifest_save, args=(90,), daemon=True).start()
 
     # 5. Worker Threads
     """
+    LOGIC:
     Pull from queue (syncrhonized automatically by queue library) # CRIT SECTION but THREAD SAFE
     Call downloaded file # not crit section THREAD SAFE
         - 
@@ -229,10 +228,9 @@ def main():
 
     * Periodically save manifest to disk * (CRIT SECTION needs lock)
 
-    loop until queue in empty
-    
+    Loop until queue in empty - signal by task_done() in worker and caught in main by join()
     """
-    num_workers = 4 
+    num_workers = 10
     threads = [] # Keep track of threads
 
     for _ in range(num_workers):
@@ -250,12 +248,13 @@ def main():
     # Final manifest save
     with manifest_lock:
         manifest_df.to_csv(MANIFEST_PATH, index=False)
-    print("[Manifest] Final save complete.")
+    print(f"[Main] Final manifest save complete. {len(manifest_df)} total entries.")
 
     # Print total runtime and number of files requested
     end_time = time.time()
     total_seconds = end_time - start_time
-    print(f"Processed {FILES_SUCCESS + FILES_FAILED} files in {total_seconds:.2f} seconds.")
+    print(f"[Main] Processed {FILES_SUCCESS + FILES_FAILED} files in {total_seconds:.2f} seconds with {num_workers} threads.")
+    print(f"[Main] Sequential time estimate: {total_seconds * num_workers:.2f} seconds.")
 
 
 if __name__ == "__main__":
