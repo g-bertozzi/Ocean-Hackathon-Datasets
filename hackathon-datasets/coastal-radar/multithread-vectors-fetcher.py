@@ -1,11 +1,15 @@
-# SDKs
+"""    
+NOTE: This script can handle mid run interrupts. A global manifest csv file will be downloaded and update periodically throughout running,
+    tracking all filenames it attempts to download, and the status of these downloads. To erase any download progress simply delete the 
+    'coastal-radar/metadata/vectors/manifest.csv' file. Any files alrady downloaded will be overwritten by the ONC client.
+"""
+
+# Import SDKs
 import threading
 import yaml
-import urllib
-import os, shutil
+import os
 from pathlib import Path
-from datetime import datetime, timedelta
-import math
+from datetime import datetime
 import pandas as pd
 from dotenv import load_dotenv
 import onc
@@ -16,10 +20,12 @@ import queue
 load_dotenv()
 
 # Project paths
-PROJECT_ROOT = Path(__file__).resolve().parent
+# PROJECT_ROOT = Path(__file__).resolve().parent # NOTE: for local testing
+PROJECT_ROOT = Path("/Volumes/Ocean-Hackathon/coastal-radar") # NOTE: for shared drive download
 DATA_ROOT = PROJECT_ROOT / "data/vectors"
 METADATA_ROOT = PROJECT_ROOT / "metadata/vectors"
 MANIFEST_PATH = METADATA_ROOT / "manifest.csv"
+PROVENANCE_PATH = METADATA_ROOT / "provenance.yaml"
 
 # Make sure folders exist
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -31,30 +37,27 @@ VECTOR_CLIENT = onc.ONC(TOKEN, outPath=str(DATA_ROOT))
 
 # Global vars
 SOG_LOCATION = "SOGCS"
-
-
-DOWNLOAD_QUEUE = queue.Queue()
-
+API_PARAMS = {} # For provenance
 FILES_SUCCESS = 0
 FILES_FAILED = 0
 
-# --- Manifest Management ---
-manifest_lock = threading.Lock()
-# manifest_df = None
+
+DOWNLOAD_QUEUE = queue.Queue() # Queue for files to download
+manifest_lock = threading.Lock() # Memory management
 
 def load_or_init_manifest() -> None: 
     """ Updates global manifest_df variable, either loading from CSV or creating a new one."""
-    global manifest_df
+
+    global MANIFEST_DF
     # either load in manifest from CSV to dataframe
     if MANIFEST_PATH.exists():
-        manifest_df = pd.read_csv(MANIFEST_PATH, parse_dates=["timestamp"])
+        MANIFEST_DF = pd.read_csv(MANIFEST_PATH, parse_dates=["timestamp"])
     # or create a new dataframe
     else:
-        manifest_df = pd.DataFrame(columns=[
+        MANIFEST_DF = pd.DataFrame(columns=[
             "timestamp", "locationCode", "deviceCategoryCode",
             "deviceCode", "filename", "path", "status"
         ])
-
 
 def get_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list[str]:
     """ Returns list of filenames via getArchivefileByLocation """
@@ -74,6 +77,11 @@ def get_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list[str]:
 
     print(f"[get_filenames] Requesting files from ONC for location {locationCode} between {dateFrom} and {dateTo}.")
     print(f"[get_filenames] Total number of files for this call: {len(filenames)} files")
+    print()
+
+    # Update dict for provenance
+    global API_PARAMS
+    API_PARAMS = params
 
     return filenames
 
@@ -82,6 +90,7 @@ def filenames_to_file_info(filenames: list[str], locationCode: str) -> pd.DataFr
 
     # Parse filenames to extract metadata and build rows
     print(f"[filenames_to_file_info] Creating information table for files in this call.")
+    print()
 
     # Create list of dictionaries: list is dataframe, each dict is a row
     manifest_list = []
@@ -108,47 +117,95 @@ def filenames_to_file_info(filenames: list[str], locationCode: str) -> pd.DataFr
 
     return file_info_df
 
+def write_provenance() -> None:
+    """ Writes provenance YAML file."""
+
+    safe_params = API_PARAMS.copy()
+    safe_params.pop("token", None)  # remove token if present
+    safe_params.pop("method", None) # redundancy
+    
+    provenance = {
+        "provenance": {
+            "challenge": "coastal-radar",
+            "data-type": "vector",
+
+            "api": {
+                "base_url": "https://data.oceannetworks.ca/api/archivefiles",
+                "methods": {
+                    "getListByLocation": {"parameters": safe_params},
+                    "getFile": {"filename": "<filename from manifest>"},
+                },
+            },
+            "manifest": {
+                "path": str(MANIFEST_PATH),
+                "last_updated": datetime.utcnow().isoformat() + "Z",
+                "file_count": len(MANIFEST_DF),
+            },
+        }
+    }
+
+    with open(PROVENANCE_PATH, "w") as f:
+        yaml.dump(provenance, f, sort_keys=False)
+
 # THREAD FUNCTIONS
+def worker() -> None:
+    """ Worker thread function to process the download queue."""
+
+    global FILES_SUCCESS, FILES_FAILED
+    while True:
+        try:
+            file_info = DOWNLOAD_QUEUE.get(timeout=5)
+        except queue.Empty:
+            break  # Exit if queue is empty
+
+        success = download_file(file_info)
+
+        # Critical section: update manifest
+        with manifest_lock:
+            update_manifest_df(file_info, success)
+            if success:
+                FILES_SUCCESS += 1
+            else:
+  
+                FILES_FAILED += 1
+
+        DOWNLOAD_QUEUE.task_done()
+
 def update_manifest_df(file_info: dict, success: bool) -> None:
     """
-    Updates the global manifest_df with:
+    Updates the global manifest dataframe with:
      
     - the file info of the file attempted to download
     - the status of the file download
-    
-    NOTE: Global manifest will only ever show files that have been attempted to download
-    If I ever want to erase my download progess, before I re run the script I only have to delete 
-    the manfiest csv. The files alrady downloaded will be overwritten by the ONC client.
-
     """
 
-    global manifest_df
+    global MANIFEST_DF
 
     filename = file_info['filename']
     status = 'success' if success else 'failed'
 
-    # Find the row in manifest_df with this filename
-    idx = manifest_df.index[manifest_df['filename'] == filename].tolist()
+    # Find the row in MANIFEST_DF with this filename
+    idx = MANIFEST_DF.index[MANIFEST_DF['filename'] == filename].tolist()
 
     if idx:
         # Update only the status column for existing row
-        manifest_df.at[idx[0], 'status'] = status
+        MANIFEST_DF.at[idx[0], 'status'] = status
     else:
         # If not present, add a new row
         new_row = file_info.copy()
         new_row['status'] = status
-        if manifest_df.empty:
-            manifest_df = pd.DataFrame([new_row], columns=manifest_df.columns)
+        if MANIFEST_DF.empty:
+            MANIFEST_DF = pd.DataFrame([new_row], columns=MANIFEST_DF.columns)
         else:
-            manifest_df = pd.concat([manifest_df, pd.DataFrame([new_row])], ignore_index=True)
+            MANIFEST_DF = pd.concat([MANIFEST_DF, pd.DataFrame([new_row])], ignore_index=True)
         
-
-def periodic_manifest_save(interval=90) -> None:
+def periodic_manifest_save(interval: int = 90) -> None:
     """Periodically saves the manifest DataFrame to CSV every 'interval' seconds."""
+
     while True:
         time.sleep(interval)
         with manifest_lock:
-            manifest_df.to_csv(MANIFEST_PATH, index=False)
+            MANIFEST_DF.to_csv(MANIFEST_PATH, index=False)
             print(f"[periodic_manifest_save] Saved at {datetime.now()}: "
                   f"[periodic_manifest_save] Processed: {FILES_SUCCESS + FILES_FAILED}, Success: {FILES_SUCCESS}, Failed: {FILES_FAILED}")
 
@@ -164,49 +221,33 @@ def download_file(file_info: dict) -> bool:
     
     except Exception as e:
         print(f"[download_file] Download failed for {file_info['filename']}: {e}")
+        print()
         return False
     
-def worker():
-    global FILES_SUCCESS, FILES_SUCCESS
-    while True:
-        try:
-            file_info = DOWNLOAD_QUEUE.get(timeout=5)
-        except queue.Empty:
-            break  # Exit if queue is empty
-
-        success = download_file(file_info)
-
-        # Critical section: update manifest
-        with manifest_lock:
-            update_manifest_df(file_info, success)
-            if success:
-                FILES_SUCCESS += 1
-            else:
-                FILES_FAILED += 1
-
-        DOWNLOAD_QUEUE.task_done()   
 
 def main():
     """"""
     start_time = time.time()  # Record start time
     print(f"[Main] Starting multithreaded vector data fetcher at {start_time}.")
+    print(f"[Main] Data root: {DATA_ROOT}")
+    print()
     
     # 1. Get list of filenames
-    yr_start = "2023-02-01T00:00:00.000Z"
-    yr_end = "2023-02-08T00:00:00.000Z"
+    req_start = "2023-01-01T00:00:00.000Z"
+    req_end = "2024-01-01T00:00:00.000Z"
 
-    filenames = get_filenames(locationCode=SOG_LOCATION, dateFrom=yr_start, dateTo=yr_end) # List of filenames from ONC
+    filenames = get_filenames(locationCode=SOG_LOCATION, dateFrom=req_start, dateTo=req_end) # List of filenames from ONC
     file_info = filenames_to_file_info(filenames=filenames, locationCode=SOG_LOCATION) # DataFrame with metadata parsed from filenames
 
     # 2. Build GLOBAL manifest from any previous script runs
-    load_or_init_manifest() # Either from memory if it exists else empty df 
+    load_or_init_manifest()
 
     # 3. Compare list of filenames and the GLOBAL manifest
     """
     - Natural join these (new files will get a NaN in 'status' column)
     - Queue file or skip it depending on 'status' column (either NaN or 'failed' means queue it)
     """
-    merged_manifest = file_info.merge(manifest_df[['filename', 'status']], on='filename', how='left')
+    merged_manifest = file_info.merge(MANIFEST_DF[['filename', 'status']], on='filename', how='left')
 
     # 4. Queue only missing or failed files
     for _, row in merged_manifest.iterrows():
@@ -217,19 +258,6 @@ def main():
     threading.Thread(target=periodic_manifest_save, args=(90,), daemon=True).start()
 
     # 5. Worker Threads
-    """
-    LOGIC:
-    Pull from queue (syncrhonized automatically by queue library) # CRIT SECTION but THREAD SAFE
-    Call downloaded file # not crit section THREAD SAFE
-        - 
-    Check whether success or failure 
-
-    * Update manifest with this sucess or failure in the 'status' column* (CRIT SECTION needs lock)
-
-    * Periodically save manifest to disk * (CRIT SECTION needs lock)
-
-    Loop until queue in empty - signal by task_done() in worker and caught in main by join()
-    """
     num_workers = 10
     threads = [] # Keep track of threads
 
@@ -247,15 +275,19 @@ def main():
 
     # Final manifest save
     with manifest_lock:
-        manifest_df.to_csv(MANIFEST_PATH, index=False)
-    print(f"[Main] Final manifest save complete. {len(manifest_df)} total entries.")
+        MANIFEST_DF.to_csv(MANIFEST_PATH, index=False)
+    print(f"[Main] Final manifest save complete. {len(MANIFEST_DF)} total entries.")
+
+    # Write provenance
+    write_provenance()
+    print(f"[Main] Provenance written to {PROVENANCE_PATH}.")
+    print()
 
     # Print total runtime and number of files requested
     end_time = time.time()
-    total_seconds = end_time - start_time
-    print(f"[Main] Processed {FILES_SUCCESS + FILES_FAILED} files in {total_seconds:.2f} seconds with {num_workers} threads.")
-    print(f"[Main] Sequential time estimate: {total_seconds * num_workers:.2f} seconds.")
-
+    total_minutes = (end_time - start_time) / 60
+    print(f"[Main] Processed {FILES_SUCCESS + FILES_FAILED} files in {total_minutes:.2f} minutes with {num_workers} threads.")
+    print(f"[Main] Sequential time estimate: {total_minutes * num_workers:.2f} minutes.")
 
 if __name__ == "__main__":
     main()
