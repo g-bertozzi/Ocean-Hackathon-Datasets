@@ -4,7 +4,7 @@ import yaml
 import urllib
 import os, shutil
 from pathlib import Path
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 import math
 import pandas as pd
 from dotenv import load_dotenv
@@ -32,14 +32,19 @@ VECTOR_CLIENT = onc.ONC(TOKEN, outPath=str(DATA_ROOT))
 # Global vars
 SOG_LOCATION = "SOGCS"
 
+
+DOWNLOAD_QUEUE = queue.Queue()
+
 # --- Manifest Management ---
 manifest_lock = threading.Lock()
 manifest_df = None
 
 def load_or_init_manifest():
     global manifest_df
+    # either load in manifest from CSV to dataframe
     if MANIFEST_PATH.exists():
         manifest_df = pd.read_csv(MANIFEST_PATH, parse_dates=["timestamp"])
+    # or create a new dataframe
     else:
         manifest_df = pd.DataFrame(columns=[
             "timestamp", "locationCode", "deviceCategoryCode",
@@ -64,9 +69,9 @@ def update_manifest_df(file_info, success: bool):
     # Append new row
     manifest_df = pd.concat([manifest_df, pd.DataFrame([row])], ignore_index=True)
 
-
 def get_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list[str]:
 
+    # Get list of filenames via getArchivefileByLocation
     params = {
     'locationCode': locationCode,
     'dateFrom': dateFrom,
@@ -77,35 +82,85 @@ def get_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list[str]:
     }
 
     response = VECTOR_CLIENT.getArchivefileByLocation(params) # Make request 
-    files = response.get('files', []) # Isolate list of files
-    n = len(files) # Number of files
+    filenames = response.get('files', []) # Isolate list of files
+    n = len(filenames) # Number of files
 
-    print(f"{locationCode} YEAR TOTAL: {len(files)} files")
+    print(f"[{locationCode} total]: {len(filenames)} files")
 
-    return files
+    return filenames
+
+def filenames_to_file_info(filenames: list[str], locationCode: str) -> pd.DataFrame:
+
+    # Parse filenames to extract metadata and build rows
+    print(f"Creating information table for {locationCode}.")
+
+    # Create list of dictionaries: list is dataframe, each dict is a row
+    manifest_list = []
+    
+    for fname in filenames:
+        # Extract time info: YYYYMMDDHHMMSS.mmmZ
+        ts_str = fname.split("_")[1].replace(".jpg", "") # Extract timestamp between the first underscore and the file extension
+        ts = pd.to_datetime(ts_str, utc = True)  # Convert to datetime object in UTC
+
+        deviceCode = fname.split("_")[0]
+        path = Path(locationCode) / fname # Planned local path
+
+        manifest_list.append({
+            "timestamp": ts,
+            "locationCode": locationCode,
+            "deviceCategoryCode": "VIDEOCAM",
+            "deviceCode": deviceCode,
+            "filename": fname,
+            "path": str(path)
+        })
+    
+    # Convert list of dicts to DataFrame
+    file_info_df = pd.DataFrame(manifest_list)
+
+    return file_info_df
 
 
 def main():
     """"""
     # 1. Get list of filenames
-
     yr_start = "2023-01-01T00:00:00.000Z"
     yr_end = "2023-01-03T00:00:00.000Z"
 
-    files = get_filenames(locationCode=SOG_LOCATION, dateFrom=yr_start, dateTo=yr_end)
+    filenames = get_filenames(locationCode=SOG_LOCATION, dateFrom=yr_start, dateTo=yr_end) # List of filenames from ONC
+    file_info = filenames_to_file_info(filenames=filenames, locationCode=SOG_LOCATION) # DataFrame with metadata parsed from filenames
 
 
     # 2. Build manifest
-    manifest_df = load_manifest() # Either from memory if it exists else empty df 
+    prev_manifest = load_or_init_manifest() # Either from memory if it exists else empty df 
+
+
+    # 3. Compare list of filenames and the new/loaded manifest
+    #      - natural join these (new files will get a NaN in 'status' column)
+    #      - queue file or skip it depending on 'status' column (either NaN or 'failed' means queue it)
+
+    merged_manifest = file_info.merge(prev_manifest[['filename', 'status']], on='filename', how='left')
 
 
     # 4. Queue only missing or failed files
-    for f in files:
-        fname = f["fileName"]
-        if not ((manifest_df["filename"] == fname) & (manifest_df["status"] == "success")).any():
-            DOWNLOAD_QUEUE.put(f)
+    for _, row in merged_manifest.iterrows():
+        if pd.isna(row['status']) or row['status'] == 'failed': # If nan or failed
+            DOWNLOAD_QUEUE.put(row) # Then enqueue NOTE: THREAD SAFE
 
-    print(f"📥 {DOWNLOAD_QUEUE.qsize()} files queued for download")
+    # 5. Worker Threads
+    """
+    Pull from queue (syncrhonized automatically by queue library) # CRIT SECTION but THREAD SAFE
+    Call downloaded file # not crit section THREAD SAFE
+        - 
+    Check whether success or failure 
+
+    * Update manifest with this sucess or failure in the 'status' column* (CRIT SECTION needs lock)
+
+    * Periodically save manifest to disk * (CRIT SECTION needs lock)
+
+    loop until queue in empty
+    
+    """
+
 
 
 if __name__ == "__main__":
