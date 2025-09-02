@@ -2,6 +2,26 @@
 NOTE: This script can handle mid run interrupts. A global manifest csv file will be downloaded and update periodically throughout running,
     tracking all filenames it attempts to download, and the status of these downloads. To erase any download progress simply delete the 
     'coastal-radar/metadata/vectors/manifest.csv' file. Any files alrady downloaded will be overwritten by the ONC client.
+
+    This vector data was already present in the ONC archive at run time.
+
+    Goal layout: 
+
+    coastal-radar/
+        data/
+            vectors/                # 1 year of hourly vectors (8760 files)
+            <ONC_filename>.tuv
+            ...
+            plots/                 
+            <ONC_filename>.png
+            ...
+        metadata/
+            vectors/
+                manifest.csv          # 7 columns: ["timestamp", "locationCode", "deviceCategoryCode", "deviceCode", "filename", "path", "status"]
+                provenance.yaml       # challenge name, data description, api call descriptions
+            plots/
+                ...
+
 """
 
 # Import SDKs
@@ -32,7 +52,7 @@ DATA_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 # ONC client
-TOKEN = os.getenv("ONC_TOKEN")
+TOKEN = os.getenv("ONC_TOKEN") # NOTE: Change this to your ONC token
 VECTOR_CLIENT = onc.ONC(TOKEN, outPath=str(DATA_ROOT))
 
 # Global vars
@@ -41,10 +61,10 @@ API_PARAMS = {} # For provenance
 FILES_SUCCESS = 0
 FILES_FAILED = 0
 
-
 DOWNLOAD_QUEUE = queue.Queue() # Queue for files to download
 manifest_lock = threading.Lock() # Memory management
 
+# FUNCTIONS
 def load_or_init_manifest() -> None: 
     """ Updates global manifest_df variable, either loading from CSV or creating a new one."""
 
@@ -224,7 +244,6 @@ def download_file(file_info: dict) -> bool:
         print()
         return False
     
-
 def main():
     """"""
     start_time = time.time()  # Record start time
