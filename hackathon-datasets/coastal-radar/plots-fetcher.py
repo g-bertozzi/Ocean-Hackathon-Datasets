@@ -7,6 +7,7 @@ Coastal Radar Challenge
     
 - Underlying u and v data vectors
     - 2MB for 2 days -> ~ 0.365 GB size
+    - ALREADY IN ARCHIVE FOR YEAR OF 2023
 
 - Wind data from a buoy and/or coastal meteorological stations 
 
@@ -163,8 +164,8 @@ def fetch_yr_vectors(locationCode: str,
                     downloadResultsOnly: bool, 
                     dateFrom: str, 
                     dateTo: str,
-                    extension: str = "nc", 
-                    dataProductCode: str =  "CODARQCSC", 
+                    extension: str = "tuv", 
+                    dataProductCode: str =  "CODARCD", 
                     deviceCategoryCode: str = "OCEANOGRAPHICRADAR", 
                     dpo_includeRadials: int = 0) -> None:
     
@@ -307,7 +308,7 @@ def main():
     # fetch_yr_codar(locationCode = "SOGCS", extension = "png", downloadResultsOnly = False, dateFrom = start, dateTo = end)
 
     # # Fetch u and v vectors
-    fetch_yr_vectors(locationCode = "SOGCS", extension = "nc", downloadResultsOnly = False, dateFrom = start, dateTo = end)
+    fetch_yr_vectors(locationCode = "SOGCS", extension = "tuv", downloadResultsOnly = False, dateFrom = start, dateTo = end)
 
     # plots_manifest = clean_and_manifest("plot")
     # vector_manifest = clean_and_manifest("vector")

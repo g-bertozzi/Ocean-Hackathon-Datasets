@@ -40,8 +40,8 @@ import queue
 load_dotenv()
 
 # Project paths
-# PROJECT_ROOT = Path(__file__).resolve().parent # NOTE: for local testing
-PROJECT_ROOT = Path("/Volumes/Ocean-Hackathon/coastal-radar") # NOTE: for shared drive download
+PROJECT_ROOT = Path(__file__).resolve().parent # NOTE: for local testing
+# PROJECT_ROOT = Path("/Volumes/Ocean-Hackathon/coastal-radar") # NOTE: for shared drive download
 DATA_ROOT = PROJECT_ROOT / "data/vectors"
 METADATA_ROOT = PROJECT_ROOT / "metadata/vectors"
 MANIFEST_PATH = METADATA_ROOT / "manifest.csv"
