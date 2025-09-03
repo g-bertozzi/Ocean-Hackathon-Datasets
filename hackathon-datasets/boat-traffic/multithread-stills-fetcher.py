@@ -12,7 +12,6 @@ import onc
 import time
 import queue
 
-
 load_dotenv()
 
 # --- Project-root based paths ---
@@ -21,10 +20,15 @@ LOCATION_CODE = "CRSS"
 PROJECT_ROOT = Path(__file__).resolve().parent # NOTE: for testing
 # PROJECT_ROOT = Path("/Volumes/Ocean-Hackathon/boat-traffic") # NOTE: for the actual data downloads
 DATA_ROOT = PROJECT_ROOT / "data" / LOCATION_CODE
-METADATA_ROOT = PROJECT_ROOT / "metadata" / LOCATION_CODE
 
-MANIFEST_PATH = Path("/Users/catherinebertozzi/hackathon-datasets/boat-traffic/metadata") / LOCATION_CODE / "manifest.csv"
-PROVENANCE_PATH = Path("/Users/catherinebertozzi/hackathon-datasets/boat-traffic/metadata") / LOCATION_CODE / "provenance.yaml"
+# LOCAL PATHS FOR METADATA
+METADATA_ROOT = Path("/Users/catherinebertozzi/hackathon-datasets/boat-traffic/metadata") / LOCATION_CODE 
+
+MANIFEST_PATH = Path(METADATA_ROOT) / "manifest.csv" # save this to local?
+PROVENANCE_PATH = Path(METADATA_ROOT) / "provenance.yaml"
+
+MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
+PROVENANCE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # Make sure folders exist
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -37,16 +41,11 @@ LOCATION_CLIENT = onc.ONC(TOKEN, outPath=str(Path(DATA_ROOT)))
 # MORE GLOBALS
 FILES_SUCCESS = 0
 
-
 DOWNLOAD_QUEUE = queue.Queue() # Queue for files to download
-RETRY_QUEUE = queue.Queue() # Queue for files that failed that we need to retry
 MAX_RETRIES = 3     
 manifest_lock = threading.Lock() # Memory management
 
-
-
 API_CALL_N = 0 # Count of API calls made
-NEW_MANIFEST = True
 
 PROV_INFO = {
     "challenge": "boat-traffic",
@@ -106,9 +105,6 @@ def write_prov() -> None:
 def get_6_month_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list:
     """
     Returns a list of filenames for still images from the video camera at the specified location within a 6 month period.
-
-    Inputs:
-    Output:
     """
 
     params = {
@@ -116,21 +112,20 @@ def get_6_month_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list
     'dateFrom': dateFrom,
     'dateTo': dateTo,
     'deviceCategoryCode': "VIDEOCAM",
-    'fileExtension': ".jpg", # 'jpg' for still images
-    # 'returnOptions': "all" # NOTE: debugging to find file size demands
+    'fileExtension': ".jpg", # NOTE: 'jpg' for still images
     }
 
     response = LOCATION_CLIENT.getArchivefileByLocation(params) # Make request 
     files = response.get('files', []) # Isolate list of files
     n = len(files) # Number of files
 
-    # Isolate info for provenance - NOTE: done for each API call
+    # Isolate info for provenance -  done for each API call
     query_url = response.get('queryUrl')
     citations_info = response.get('citations')[0]
     url_parsed = urllib.parse.urlparse(query_url) # Parse the URL and break into components
 
+    # Remove token for printing
     params_minus_token = params.copy()
-    # del params_minus_token['token']
     params_minus_token.pop("token", None)
     
     # Update global PROV_INFO with API call details
@@ -145,11 +140,7 @@ def get_6_month_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list
 
     API_CALL_N += 1 # Update global API call count
 
-    # NOTE: debugging output
-    # print("6 months of data")
-    # print(f"file 1: {files[0] if files else 'No files found.'}")
-    # print(f"file {n}: {files[-1] if files else 'No files found.'}")
-    # print(f"num files: {n}")
+    # print(f"[get_6_month_filenames] file 1: {files[0] if files else 'No files found.'}, file {n}: {files[-1] if files else 'No files found.'}")
 
     return files
 
@@ -174,7 +165,6 @@ def get_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list:
     files2 = get_6_month_filenames(locationCode = locationCode, dateFrom = mid_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z"), dateTo = dateTo)
     all_files.extend(files2)
 
-    # NOTE: debugging output
     print(f"[get_filenames] {locationCode} YEAR TOTAL: {len(all_files)} files")
 
     return all_files
@@ -213,7 +203,7 @@ def filenames_to_file_info(filenames: list[str], locationCode: str) -> pd.DataFr
 
 
 # THREAD FUNCTIONS
-def download_batches(file_info: pd.DataFrame, batch_size: int = 2000, num_threads: int = 20, max_retries: int = 3):
+def download_batches(file_info: pd.DataFrame, batch_size: int = 2000, num_threads: int = 20):
     """
     Download files in batches with multithreading.
     - Splits `file_info` into batches of size `batch_size`
@@ -247,14 +237,17 @@ def download_batches(file_info: pd.DataFrame, batch_size: int = 2000, num_thread
         for t in threads:
             t.join()
 
-        print(f"[download_batches] Finished downloading batch {start_idx} to {end_idx-1}.")
+        cur_time = time.time()  # Record start time
+        readable_time = datetime.fromtimestamp(cur_time).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"[download_batches] Finished downloading batch {start_idx} to {end_idx-1} at {readable_time}.")
 
-        # Save manifest after each chunk
+        # Save manifest after each batch
         with manifest_lock:
             MANIFEST_DF.to_csv(MANIFEST_PATH, index=False)
             print(f"[download_batches] Manifest saved. Successes: {FILES_SUCCESS}. Total entries: {len(MANIFEST_DF)}")
 
-        # Optional small sleep to avoid hitting API too hard
+
+        # Small sleep to avoid hitting API too hard
         time.sleep(1)
 
         start_idx += batch_size
@@ -267,8 +260,8 @@ def download_batches(file_info: pd.DataFrame, batch_size: int = 2000, num_thread
 def worker() -> None:
     """ Worker thread function to process the download queue.
 
-    Will pull from queue and attempt to download. Updates manifest dataframe and global success/fail counters.
-    
+    Will pull from queue and attempt to download. Updates manifest dataframe and global success counter. 
+    Handles retry logic for failed files from each batch.
     """
 
     global FILES_SUCCESS
@@ -278,27 +271,27 @@ def worker() -> None:
             file_info = DOWNLOAD_QUEUE.get(timeout=5)
         except queue.Empty:
             break  # Exit if queue is empty
+        
+        try:
+            success = download_file(file_info) # Returns bool depending on download success
 
-        success = download_file(file_info) # Returns bool depending on download success
-
-        # Critical section: update manifest
-        with manifest_lock:
-            update_manifest_df(file_info, success)
-            if success:
-                FILES_SUCCESS += 1
-            else:
-                attempts = file_info.get("attempts", 0) + 1 # Check cur attempts val
-                file_info["attempts"] = attempts # Update cur row with incremented val
-
-                if attempts <= MAX_RETRIES:
-                        DOWNLOAD_QUEUE.put(file_info)  # requeue for retry
+            # Critical section: update manifest
+            with manifest_lock:
+                update_manifest_df(file_info, 'success' if success else 'failed') # update dataframe manifest
+                if success:
+                    FILES_SUCCESS += 1 # update global counter
                 else:
-                    update_manifest_df(file_info, False)  # permanent fail      
+                    # Check how many times file has failed
+                    attempts = file_info.get("attempts", 0) + 1 # Check cur attempts val
+                    file_info["attempts"] = attempts # Update cur row with incremented val
 
-        DOWNLOAD_QUEUE.task_done()
+                    if attempts <= MAX_RETRIES:
+                            DOWNLOAD_QUEUE.put(file_info)  # requeue for retry
+        finally:
+            DOWNLOAD_QUEUE.task_done()
 
 def download_file(file_info: dict) -> bool:
-    """Download the file and return True if successful, False otherwise. Appends fai"""
+    """Download the file and return True if successful, False otherwise, including for exceptions."""
 
     try:
         LOCATION_CLIENT.getFile(file_info['filename'])
@@ -353,12 +346,14 @@ def periodic_manifest_save(interval: int = 60) -> None:
             print(f"[periodic_manifest_save] Saved at {datetime.now()}: "
                   f"[periodic_manifest_save] Processed: {total_attempted}, Success: {FILES_SUCCESS}, Failed: {failed}")
 
-
 def main():
 
+    # NOTE: logging
     start_time = time.time()  # Record start time
-    print(f"[Main] Starting multithreaded still image data fetcher at {LOCATION_CLIENT}.")
+    readable_time = datetime.fromtimestamp(start_time).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[Main] Starting multithreaded still image data fetcher for {LOCATION_CODE} at {readable_time}.")
     print(f"[Main] Data root: {DATA_ROOT}")
+    print(f"[Main] Metadata root: {METADATA_ROOT}")
     print()
     
     # 1. Get list of filenames
@@ -377,7 +372,7 @@ def main():
     - Queue file or skip it depending on 'status' column (either NaN or 'failed' means queue it)
     """
     merged_manifest = file_info.merge(MANIFEST_DF[['filename', 'status']], on='filename', how='left')
-    merged_manifest = merged_manifest.iloc[:15000] # NOTE: FOR SUBSAMPLE
+    # merged_manifest = merged_manifest.iloc[:20000] # NOTE: FOR SUBSAMPLE
 
     # 4. Download by batches - multithread
     num_workers = 20
@@ -390,7 +385,7 @@ def main():
 
     write_prov()
 
-    # Print total runtime and number of files requested
+    # NOTE: logging
     end_time = time.time()
     total_minutes = (end_time - start_time) / 60
     total_attempted = FILES_SUCCESS + MANIFEST_DF[MANIFEST_DF['status'] == 'failed'].shape[0]
