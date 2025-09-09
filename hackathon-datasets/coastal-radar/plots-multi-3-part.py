@@ -1,0 +1,396 @@
+# Import SDKs
+import calendar
+import threading
+import traceback
+import yaml
+import os
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+import pandas as pd
+from dotenv import load_dotenv
+import onc
+import time
+import queue
+from typing import Optional
+import pandas as pd
+
+
+# --- Setup ---
+load_dotenv()
+
+# Project paths
+PROJECT_ROOT = Path(__file__).resolve().parent # NOTE: for local testing
+DATA_ROOT = PROJECT_ROOT / "data/plots"
+METADATA_ROOT = PROJECT_ROOT / "metadata/plots"
+BATCH_MANIFEST_PATH = METADATA_ROOT / "batch-manifest.csv"
+PROVENANCE_PATH = METADATA_ROOT / "provenance.yaml"
+
+# Make sure folders exist
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+# ONC client
+TOKEN = os.getenv("ONC_TOKEN") # NOTE: Change this to your ONC token
+PLOT_CLIENT = onc.ONC(TOKEN, outPath=str(DATA_ROOT))
+
+# --- Globals ---
+BATCH_MANIFEST: Optional[pd.DataFrame] = None
+
+batch_lock = threading.Lock()
+
+DOWNLOAD_QUEUE = queue.Queue() # Queue for files to download
+MAX_RETRIES = 3
+POLL_INTERVAL = 5
+
+# FUNCTIONS
+def build_quartermonth_batches(year: int = 2023) -> pd.DataFrame:
+    """
+    Make quarter-of-month batches:
+      - 1-7
+      - 8-15
+      - 16-23
+      - 24-1 of next month (exclusive)
+    
+    Schema: [dpRequestId: int, runId: int, batch_id: str, start: pd.Datetime, end:pd.Datetime, last_call_ran: str, call_status: str, attempt_count: int, downloaded: bool]
+    """
+    
+    # set base parameters
+    data_product_code = "CODARQCSC"
+    device_category_code = "OCEANOGRAPHICRADAR"
+    etx = "png"
+    location_code = "SOGCS"
+
+    rows = []
+    for month in range(1, 2):
+        # 1st–7th
+        q1_start = datetime(year, month, 1)
+        q1_start_str = q1_start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        q1_end = datetime(year, month, 7, 23, 59, 59)
+        q1_end_str = q1_end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        q1_params = {
+            "dateFrom": q1_start_str,
+            "dateTo": q1_end_str,
+            "dataProductCode": data_product_code,
+            "deviceCategoryCode": device_category_code,
+            "locationCode": location_code,
+            "dpo_includeRadials": 0,
+            "extension": etx
+        }
+
+        q1_dp_id = make_dp_request(filters= q1_params) # Get dpRequestId
+        
+        rows.append({
+            "dpRequestId": q1_dp_id,
+            "dpRunId": None,
+            "batch_id": f"{year}-{month:02d}-1Q",
+            "start": q1_start,
+            "end": q1_end,
+            "last_call_ran": "requestDataProduct",
+            "call_status": "complete",
+            "attempt_count": 0,
+            "downloaded": False
+        })
+
+        # 8th–15th
+        q2_start = datetime(year, month, 8)
+        q2_start_str = q2_start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        q2_end = datetime(year, month, 15, 23, 59, 59)
+        q2_end_str = q2_end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        q2_params = {
+            "dateFrom": q2_start_str,
+            "dateTo": q2_end_str,
+            "dataProductCode": data_product_code,
+            "deviceCategoryCode": device_category_code,
+            "locationCode": location_code,
+            "dpo_includeRadials": 0,
+            "extension": etx
+        }
+
+        q2_dp_id = make_dp_request(filters= q2_params) # Get dpRequestId
+
+        rows.append({
+            "dpRequestId": q2_dp_id,
+            "dpRunId": None,
+            "batch_id": f"{year}-{month:02d}-2Q",
+            "start": q2_start,
+            "end": q2_end,
+            "last_call_ran": "requestDataProduct",
+            "call_status": "complete",
+            "attempt_count": 0,
+            "downloaded": False
+        })
+
+        # 16th–23rd
+        q3_start = datetime(year, month, 16)
+        q3_start_str = q3_start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        q3_end = datetime(year, month, 23, 23, 59, 59)
+        q3_end_str = q3_end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        q3_params = {
+            "dateFrom": q3_start_str,
+            "dateTo": q3_end_str,
+            "dataProductCode": data_product_code,
+            "deviceCategoryCode": device_category_code,
+            "locationCode": location_code,
+            "dpo_includeRadials": 0,
+            "extension": etx
+        }
+
+        q3_dp_id = make_dp_request(filters= q3_params) # Get dpRequestId
+
+        rows.append({
+            "dpRequestId": q3_dp_id,
+            "dpRunId": None,
+            "batch_id": f"{year}-{month:02d}-3Q",
+            "start": q3_start,
+            "end": q3_end,
+            "last_call_ran": "requestDataProduct",
+            "call_status": "complete",
+            "attempt_count": 0,
+            "downloaded": False
+        })
+
+        # 24th → 1st of next month (exclusive)
+        if month == 12:
+            # For December, roll into Jan 1 of next year
+            next_month_start = datetime(year + 1, 1, 1)
+        else:
+            next_month_start = datetime(year, month + 1, 1)
+
+        q4_start = datetime(year, month, 24)
+        q4_start_str = q4_start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        q4_end = next_month_start - timedelta(seconds=1)
+        q4_end_str = q4_end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+        q4_params = {
+            "dateFrom": q4_start_str,
+            "dateTo": q4_end_str,
+            "dataProductCode": data_product_code,
+            "deviceCategoryCode": device_category_code,
+            "locationCode": location_code,
+            "dpo_includeRadials": 0,
+            "extension": etx
+        }
+
+        q4_dp_id = make_dp_request(filters= q4_params) # Get dpRequestId
+
+        rows.append({
+            "dpRequestId": q4_dp_id,
+            "dpRunId": None,
+            "batch_id": f"{year}-{month:02d}-4Q",
+            "start": q4_start,
+            "end": q4_end,  # 23:59:59 of last day
+            "last_call_ran": "requestDataProduct",
+            "call_status": "complete",
+            "attempt_count": 0,
+            "downloaded": False
+        })
+
+    return pd.DataFrame(rows)
+
+def load_or_init_batch_manifest(year: int = 2023) -> None:
+    """ 
+    Points global BATCH_MANIFEST to the exisiting csv file df or a new df. 
+    Schema: [dpRequestId: int, runId: int or None, batch_id: str, start: pd.Datetime, end:pd.Datetime, last_call_ran: str, call_status: str, attempt_count: int, downloaded: bool]
+    """
+    global BATCH_MANIFEST
+
+    if BATCH_MANIFEST_PATH.exists():
+        BATCH_MANIFEST = pd.read_csv(BATCH_MANIFEST_PATH)
+        BATCH_MANIFEST["attempt_count"] = 0 # Reset attempt_count to 0 for all batches
+    else:
+        BATCH_MANIFEST = build_quartermonth_batches(year)
+
+def make_dp_request(filters: dict) -> int:
+
+    response = PLOT_CLIENT.requestDataProduct(filters=filters)
+    dpRequestId = response.get("dpRequestId")
+
+    print(f"[requestDataProduct] dpRequestId: {dpRequestId}")
+
+    return dpRequestId
+
+# THREAD FUNCTIONS
+def cart_complete(id: int) -> bool:
+    """ Returns True if cart is closed, i.e. last_call_ran is complete. """
+    response = PLOT_CLIENT.checkDataProduct(dpRequestId=id) 
+    cart_status = response.get('cartStatus') # -> int where 0 = Closed and 1 = Open
+
+    return True if cart_status == 0 else False
+
+def run_dp(dpRequestId: int) -> list[int]:
+    """ 
+    Takes dpRequestId from requestDataProduct and returns dpRunId. 
+    Updates BATCH_MANIFEST with dpRunId, last_call_ran, call_status.
+
+    NOTE: No error handling? either returns the Id or an error
+    """
+    global BATCH_MANIFEST
+
+    response = PLOT_CLIENT.runDataProduct(dpRequestId=dpRequestId, waitComplete=True)
+    dpRunId = response.get('runIds')
+
+    if not dpRunId:
+        raise ValueError(f"Missing dpRunId in response: {response}")
+
+    call_status = response.get("status") # Get status of runDataProduct -- waitComplete should wait for status == 'complete'
+
+    with batch_lock: # update batch manifest last_call_ran
+        BATCH_MANIFEST.loc[BATCH_MANIFEST["dpRequestId"] == dpRequestId, "last_call_ran"] = "runDataProduct"
+        BATCH_MANIFEST.loc[BATCH_MANIFEST["dpRequestId"] == dpRequestId, "call_status"] = call_status
+    
+    return dpRunId
+
+def download_dp(dpRunId: int, dpRequestId: int):
+    """ Takes dpRequestId from requestDataProduct and dpRunId from runDataProduct and returns ------. """
+    global BATCH_MANIFEST
+
+    try:
+        response = PLOT_CLIENT.downloadDataProduct(runId=dpRunId, 
+                                                maxRetries=0, 
+                                                downloadResultsOnly=False, 
+                                                includeMetadataFile=False, 
+                                                overwrite=False)
+
+        # Poll until cart closes
+        while cart_complete(id=dpRequestId) is False:
+            time.sleep(3)
+            print(f"[download_dp] requestId {dpRequestId} downloading in progess.")
+
+        with batch_lock:
+            # update batch manifest last_call_ran
+            BATCH_MANIFEST.loc[BATCH_MANIFEST["dpRunId"] == dpRunId, "last_call_ran"] = "downloadDataProduct"
+            BATCH_MANIFEST.loc[BATCH_MANIFEST["dpRunId"] == dpRunId, "call_status"] = "complete"
+            BATCH_MANIFEST.loc[BATCH_MANIFEST["dpRunId"] == dpRunId, "downloaded"] = True
+
+        return True
+
+    except Exception as e:
+        print(f"[download_dp] error: {e}")
+        return False
+
+
+def worker():
+    """
+    """
+
+    while True:
+
+        # 1. Pull from queue / break when empty
+        try:
+            batch_info = DOWNLOAD_QUEUE.get(timeout=5) # -> batch_info: dict
+        except queue.Empty:
+            break
+
+        req_id = batch_info['dpRequestId'] # -> dpRequestId: int
+
+        # 2. Run data product
+        run_ids = None
+        for run_id in run_ids: # could be mult?
+            for attempt in range(MAX_RETRIES):
+                try:
+                    run_id = run_dp(dpRequestId=req_id) # -> dpRunId: int
+                    break
+                except Exception as e:
+                    print(f"[worker] runDataProduct failed (attempt {attempt+1}): {e}")
+                    traceback.print_exc()
+                    time.sleep(5)
+            if run_id is None:
+                print(f"[worker] runDataProduct failed permanently for {req_id}")
+                DOWNLOAD_QUEUE.task_done()
+                continue
+
+        # 3. Download data product 
+        success = False
+        for attempt in range(MAX_RETRIES):
+            try:
+                download_dp(dpRunId=run_id, dpRequestId=req_id)
+                success = True
+                break
+            except Exception as e:
+                print(f"[worker] download failed (attempt {attempt+1}): {e}")
+                traceback.print_exc()
+                time.sleep(5)
+        if not success:
+            print(f"[worker] download failed permanently for {req_id}")
+
+        DOWNLOAD_QUEUE.task_done()
+
+        # RETRY logic? for run and download or seperately?
+
+
+
+
+def main():
+    # A. Initial Logging
+    start_time = time.time()  # start timer
+    print(start_time)
+
+    global BATCH_MANIFEST, DOWNLOAD_QUEUE
+
+    # 1. Init batch and file manifest
+    load_or_init_batch_manifest(year=2023) # points BATCH_MANIFEST
+    print(BATCH_MANIFEST)
+
+    # 2. Build download queue 
+    for _, row in BATCH_MANIFEST.iterrows():
+        if row["downloaded"] != True: # Enqueue all batches not yet downloaded
+            DOWNLOAD_QUEUE.put(row.to_dict())
+            print(f"[main] queueing dpRequestId: {row['dpRequestId']}, start: {row['start']}, end: {row['end']}")
+    
+    return
+
+    # 3. Start threads
+    num_workers = 4
+    threads = []
+
+    print(f"[main] Starting {num_workers} threads.")
+    for _ in range(num_workers):
+        t = threading.Thread(target=worker)
+        t.start() # Initialize and start thread object 't'
+        threads.append(t)
+
+    # 4. Finish threads
+    DOWNLOAD_QUEUE.join() # Wait for all tasks in the queue to be processed - signaled by task_done() in worker
+
+    # Main thread waits for all threads to finish
+    for t in threads:
+        t.join()
+
+    # 5. Logging / Summary
+
+    """
+    Flow:
+
+
+    1. load or init batch manifest
+        - if csv exists: load into BATCH_MANIFEST global dataframe
+        - else build 1/4 month batches df and point BATCH_MANIFEST global dataframe
+    
+
+    2. iterate through BATCH_MANIFEST and append row to queue if not downloaded 
+
+    3. workers
+        - pull batch from queue
+        - runDataProduct(dpRequestId) -> dpRunId saved to batch manifest
+
+        - downloadDataProdct()
+        - orderDataProduct
+            - {params, maxRetries = 3, downloadResultsOnly = False, includeMetadataFile = False, overwrite = False}
+
+        - at end of each batch:
+            
+            - retry logic for failed downloads?
+                - if ANY file fails we would have to requeue the entire batch
+                    - would successful ones just be over written?
+
+            - batch records:
+                - mark batch as done in batch manifest
+                - write batch manifest to csv
+
+    """
+
+if __name__ == "__main__":
+    main()
