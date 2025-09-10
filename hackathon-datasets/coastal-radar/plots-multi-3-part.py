@@ -1,11 +1,10 @@
 # Import SDKs
-import calendar
 import threading
 import traceback
 import yaml
 import os
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import pandas as pd
 from dotenv import load_dotenv
 import onc
@@ -19,7 +18,7 @@ import pandas as pd
 load_dotenv()
 
 # Project paths
-PROJECT_ROOT = Path(__file__).resolve().parent # NOTE: for local testing
+PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = PROJECT_ROOT / "data/plots"
 METADATA_ROOT = PROJECT_ROOT / "metadata/plots"
 BATCH_MANIFEST_PATH = METADATA_ROOT / "batch-manifest.csv"
@@ -106,11 +105,12 @@ def manifest_to_prov(output_path="prov.yaml"):
 
 def build_quartermonth_batches(year: int = 2023) -> pd.DataFrame:
     """
-    Make quarter-of-month batches:
+    Makes quarter-of-month batch manifest and request data products for each batch.
+
     Schema: [dpRequestId: int, runIds: int, batch_id: str, start: pd.Datetime, end:pd.Datetime, last_call_ran: str, call_status: str, attempt_count: int, downloaded: bool]
     """
     
-    # set base parameters
+    # Set base parameters
     data_product_code = "CODARQCSC"
     device_category_code = "OCEANOGRAPHICRADAR"
     etx = "png"
@@ -118,11 +118,11 @@ def build_quartermonth_batches(year: int = 2023) -> pd.DataFrame:
 
     rows = []
     for month in range(1, 2):
-        # 1st–7th
+        # Q1: 1st–7th
         q1_start = pd.Timestamp(year=year, month=month, day=1, tz='UTC')
         q1_start_str = q1_start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        q1_end = q1_start + timedelta(hours=12)
-        #q1_end = pd.Timestamp(year=2024, month=8, day=7, hour=23, minute=59, second=59, tz='UTC')
+        # q1_end = q1_start + timedelta(hours=12)
+        q1_end = pd.Timestamp(year=year, month=month, day=7, hour=23, minute=59, second=59, tz='UTC')
         q1_end_str = q1_end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
         q1_params = {
@@ -149,11 +149,11 @@ def build_quartermonth_batches(year: int = 2023) -> pd.DataFrame:
             "downloaded": False
         })
 
-        # 8th–15th
-        q2_start = pd.Timestamp(year, month, day=8, tz='UTC')
+        # Q2: 8th–15th
+        q2_start = pd.Timestamp(year=year, month=month, day=8, tz='UTC')
         q2_start_str = q2_start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        q2_end = q2_start + timedelta(hours=12)
-        # q2_end = pd.Timestamp(year, month, day=9, hour=23, minute=59, second=59, tz='UTC')
+        # q2_end = q2_start + timedelta(hours=12)
+        q2_end = pd.Timestamp(year=year, month=month, day=15, hour=23, minute=59, second=59, tz='UTC')
         q2_end_str = q2_end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
         q2_params = {
@@ -180,11 +180,11 @@ def build_quartermonth_batches(year: int = 2023) -> pd.DataFrame:
             "downloaded": False
         })
 
-        # 16th–23rd
-        q3_start = pd.Timestamp(year, month, day=16, tz='UTC')
+        # Q3: 16th–23rd
+        q3_start = pd.Timestamp(year=year, month=month, day=16, tz='UTC')
         q3_start_str = q3_start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        q3_end = q3_start + timedelta(hours=12)
-        # q3_end = pd.Timestamp(year, month, day=23, hour=23, minute=59, second=59, tz='UTC')
+        # q3_end = q3_start + timedelta(hours=12)
+        q3_end = pd.Timestamp(year=year, month=month, day=23, hour=23, minute=59, second=59, tz='UTC')
         q3_end_str = q3_end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
         q3_params = {
@@ -211,17 +211,17 @@ def build_quartermonth_batches(year: int = 2023) -> pd.DataFrame:
             "downloaded": False
         })
 
-        # 24th → 1st of next month (exclusive)
+        # Q4: 24th → 1st of next month (exclusive)
         if month == 12:
             # For December, roll into Jan 1 of next year
             next_month_start = pd.Timestamp(year=year+1, month=1, day=1, tz='UTC')
         else:
             next_month_start = pd.Timestamp(year=year, month=month+1, day=1, tz='UTC')
 
-        q4_start = pd.Timestamp(year, month, day=24, tz='UTC')
+        q4_start = pd.Timestamp(year=year, month=month, day=24, tz='UTC')
         q4_start_str = q4_start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
-        q4_end = q4_start + timedelta(hours=12)
-        # q4_end = next_month_start - timedelta(seconds=1)
+        # q4_end = q4_start + timedelta(hours=12)
+        q4_end = next_month_start - timedelta(seconds=1)
         q4_end_str = q4_end.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
         q4_params = {
@@ -313,7 +313,7 @@ def run_dp(dpRequestId: int) -> list[int]:
     return runIds
 
 def download_dp(runIds: int, dpRequestId: int):
-    """ Takes dpRequestId from requestDataProduct and runIds from runDataProduct and returns ------. """
+    """ Takes dpRequestId from requestDataProduct and runIds from runDataProduct and returns True unless error is raised by API. """
     global BATCH_MANIFEST
 
     try:
@@ -358,14 +358,14 @@ def worker():
         req_id = batch_info['dpRequestId'] # -> dpRequestId: int
 
         # 2. Run data product
-
         for attempt in range(MAX_RETRIES):
             try:
                 with log_lock:
                     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     print(f"[worker] trying to get runIds for requestId {req_id} at {now}.")
 
-                run_ids = run_dp(dpRequestId=req_id) # -> runIds: int OR list[int]
+                run_ids = run_dp(dpRequestId=req_id) # -> runIds: list[int]
+                run_id = run_ids[0]
                 
                 with log_lock:
                     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -385,28 +385,27 @@ def worker():
             print(f"[worker] after running ")
             print(BATCH_MANIFEST)
 
-        # 3. Download data product 
+        # 3. Download data product -- 
         success = False
-        for i, run_id in enumerate(run_ids):
-            for attempt in range(MAX_RETRIES):
-                try:
-                    with log_lock:
-                        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        print(f"[worker] trying to download for requestId {req_id}[{i}] runIds {run_id} at {now}.")
-                    download_dp(runIds=run_id, dpRequestId=req_id)
-                    success = True
-                    
-                    with log_lock:
-                        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        print(f"[worker] downloaded runIds {run_id} at {now}.")
+        for attempt in range(MAX_RETRIES):
+            try:
+                with log_lock:
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"[worker] trying to download for requestId {req_id} runIds {run_id} at {now}.")
+                download_dp(runIds=run_id, dpRequestId=req_id)
+                success = True
+                
+                with log_lock:
+                    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"[worker] downloaded runIds {run_id} at {now}.")
 
-                    break
-                except Exception as e:
-                    print(f"[worker] download failed (attempt {attempt+1}): {e}")
-                    traceback.print_exc()
-                    time.sleep(5)
-            if not success:
-                print(f"[worker] download failed permanently for {req_id}")
+                break
+            except Exception as e:
+                print(f"[worker] download failed (attempt {attempt+1}): {e}")
+                traceback.print_exc()
+                time.sleep(5)
+        if not success:
+            print(f"[worker] download failed permanently for {req_id}")
      
         DOWNLOAD_QUEUE.task_done()
   
@@ -415,20 +414,15 @@ def worker():
             print(BATCH_MANIFEST)
 
 
-        # RETRY logic? for run and download or seperately?
-
-
-
-
 def main():
     # A. Initial Logging
-    start_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")  # start timer
-    print(f"[main] Starting at {start_time}.")
+    start_time = datetime.now()  # start timer
+    print(f"[main] Starting at {start_time.strftime("%Y-%m-%d %H:%M:%S")}.")
 
     global BATCH_MANIFEST, DOWNLOAD_QUEUE
 
-    # 1. Init batch and file manifest
-    load_or_init_batch_manifest(year=2023) # points BATCH_MANIFEST
+    # 1. Init batch manifest
+    load_or_init_batch_manifest(year=2023)
     print(BATCH_MANIFEST)
 
     # 2. Build download queue 
@@ -437,9 +431,8 @@ def main():
             DOWNLOAD_QUEUE.put(row.to_dict())
             print(f"[main] queueing dpRequestId: {row['dpRequestId']}, start: {row['start']}, end: {row['end']}")
     
-
     # 3. Start threads
-    num_workers = 4
+    num_workers = 4 
     threads = []
 
     print(f"[main] Starting {num_workers} threads.")
@@ -456,8 +449,20 @@ def main():
         t.join()
 
     # 5. Logging / Summary
-
     manifest_to_prov()
+
+    end_time = datetime.now()
+    elapsed_sec = end_time - start_time
+
+    total_batches = len(BATCH_MANIFEST)
+    success_batches = len(BATCH_MANIFEST[BATCH_MANIFEST["downloaded"] == True])
+    failed_batches = len(BATCH_MANIFEST[BATCH_MANIFEST["downloaded"] == False])
+
+    print("\n===== BATCH DOWNLOAD SUMMARY =====")
+    print(f"Total batches processed : {total_batches}")
+    print(f"Successful batches      : {success_batches}")
+    print(f"Failed batches          : {failed_batches}")
+    print(f"Elapsed time (seconds)  : {elapsed_sec:.2f} sec")
 
     """
     Flow:
