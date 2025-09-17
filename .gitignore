@@ -1,1 +1,17 @@
 .env
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+
+# Local data
+data/
+metadata/
+
+# User/system files
+*.log
+*.swp
+*.swo
