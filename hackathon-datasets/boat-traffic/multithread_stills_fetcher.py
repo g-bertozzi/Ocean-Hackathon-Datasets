@@ -1,3 +1,19 @@
+"""
+Multithreaded ONC Still Image Downloader
+
+This script downloads still images from Ocean Networks Canada (ONC) for a given 
+location and time period. It uses the ONC API, handles batching, retries, and 
+multithreaded downloads. A manifest (CSV) tracks download status, and a 
+provenance file (YAML) records API calls.
+
+Key features:
+- Manifest ensures continuity across runs and after interrupts
+- Mid-run interrupts are recoverable
+- Supports retry logic for failed files
+- Metadata and provenance are saved for reproducibility
+"""
+
+
 # Import SDKs
 import random
 import threading
@@ -16,18 +32,12 @@ load_dotenv()
 # --- Project-root based paths ---
 LOCATION_CODE = "CRSS"
 
-PROJECT_ROOT = Path(__file__).resolve().parent # NOTE: for local downloads
+PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = PROJECT_ROOT / "data" / LOCATION_CODE
 METADATA_ROOT = PROJECT_ROOT / "metadata" / LOCATION_CODE
 
 MANIFEST_PATH = Path(METADATA_ROOT) / "manifest.csv"
 PROVENANCE_PATH = Path(METADATA_ROOT) / "provenance.yaml"
-
-# Make sure folders exist
-DATA_ROOT.mkdir(parents=True, exist_ok=True)
-METADATA_ROOT.mkdir(parents=True, exist_ok=True)
-MANIFEST_PATH.parent.mkdir(parents=True, exist_ok=True)
-PROVENANCE_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 # --- ONC API client setup ---
 TOKEN = os.getenv("ONC_TOKEN")
@@ -57,6 +67,19 @@ PROV_INFO = {
 }
 
 # FUNCTIONS
+def setup_paths() -> dict:
+    """Ensure required directories exist. Call once at runtime, not at import."""
+    for path in [DATA_ROOT, METADATA_ROOT, MANIFEST_PATH.parent, PROVENANCE_PATH.parent]:
+        path.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "project_root": PROJECT_ROOT,
+        "data_root": DATA_ROOT,
+        "metadata_root": METADATA_ROOT,
+        "manifest_path": MANIFEST_PATH,
+        "provenance_path": PROVENANCE_PATH,
+    }
+
 def load_or_init_manifest() -> None: 
     """ 
     Updates global manifest_df variable, either loading from CSV or creating a new one.
@@ -180,17 +203,25 @@ def filenames_to_file_info(filenames: list[str], locationCode: str) -> pd.DataFr
     print()
 
     # Create list of dictionaries: list = dataframe, each dict = a row
-    manifest_list = []
+    rows = []
     
     # Parse filenames to extract metadata and build rows
     for fname in filenames:
-        ts_str = fname.split("_")[1].replace(".jpg", "") # Extract timestamp between the first underscore and the file extension
-        ts = pd.to_datetime(ts_str, utc = True)  # Convert to datetime object in UTC
+        parts = fname.split("_")
+        if len(parts) < 2:
+            raise ValueError(f"Invalid filename format (expected 'deviceCode_TIMESTAMP.jpg'): {fname}")
 
-        deviceCode = fname.split("_")[0]
+        deviceCode = parts[0]
+        ts_str = ts_str = parts[1].replace(".jpg", "")
+
+        try:
+            ts = pd.to_datetime(ts_str, utc=True)
+        except Exception as e:
+            raise ValueError(f"Could not parse timestamp from filename '{fname}': {e}")
+
         path = Path(locationCode) / fname # Planned local path in data root
 
-        manifest_list.append({
+        rows.append({
             "timestamp": ts,
             "locationCode": locationCode,
             "deviceCategoryCode": "VIDEOCAM",
@@ -199,10 +230,8 @@ def filenames_to_file_info(filenames: list[str], locationCode: str) -> pd.DataFr
             "path": str(path)
         })
     
-    # Convert list of dicts to DataFrame
-    file_info_df = pd.DataFrame(manifest_list)
 
-    return file_info_df
+    return pd.DataFrame(rows)
 
 # THREAD FUNCTIONS
 def download_batches(file_info: pd.DataFrame, batch_size: int = 2000, num_threads: int = 20) -> None:
@@ -350,6 +379,8 @@ def periodic_manifest_save(interval: int = 60) -> None:
                   f"[periodic_manifest_save] Processed: {total_attempted}, Success: {FILES_SUCCESS}, Failed: {failed}")
 
 def main():
+
+    setup_paths()
 
     # A: logging
     start_time = time.time()

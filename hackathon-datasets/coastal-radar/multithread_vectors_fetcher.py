@@ -1,10 +1,10 @@
 """    
-NOTE: This script can handle mid run interrupts. A global manifest csv file will be downloaded and update periodically throughout running,
-    tracking all filenames it attempts to download, and the status of these downloads. To erase any download progress simply delete the 
-    'coastal-radar/metadata/vectors/manifest.csv' file. Any files already downloaded will be overwritten by the ONC client.
-
-    This vector data was already present in the ONC archive at run time.
-
+NOTE: This script can handle mid run interrupts. If at any point the script downloads fail, simply rerun the script.
+    A global manifest csv file will be downloaded and update periodically throughout running, tracking all filenames 
+    it attempts to download, and the status of these downloads. To erase any download progress simply delete the 
+    'coastal-radar/metadata/vectors/manifest.csv' file. You can then rerun the script and any files you retry to 
+    download will be overwritten by the ONC client. 
+    
     Goal layout: 
 
     coastal-radar/
@@ -21,7 +21,6 @@ NOTE: This script can handle mid run interrupts. A global manifest csv file will
                 provenance.yaml       # challenge name, data description, api call descriptions
             plots/
                 ...
-
 """
 
 # Import SDKs
@@ -41,8 +40,8 @@ load_dotenv()
 
 # Project paths
 PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_ROOT = PROJECT_ROOT / "data/vectors(2024)"
-METADATA_ROOT = PROJECT_ROOT / "metadata/vectors(2024)"
+DATA_ROOT = PROJECT_ROOT / "data/vectors"
+METADATA_ROOT = PROJECT_ROOT / "metadata/vectors"
 MANIFEST_PATH = METADATA_ROOT / "manifest.csv"
 PROVENANCE_PATH = METADATA_ROOT / "provenance.yaml"
 
@@ -60,7 +59,7 @@ API_PARAMS = {} # For provenance
 FILES_SUCCESS = 0
 FILES_FAILED = 0
 
-DOWNLOAD_QUEUE = queue.Queue() # Queue for files to download
+DOWNLOAD_QUEUE = queue.Queue()
 manifest_lock = threading.Lock()
 
 # FUNCTIONS
@@ -90,7 +89,7 @@ def get_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list[str]:
     'dateFrom': dateFrom,
     'dateTo': dateTo,
     'deviceCategoryCode': "OCEANOGRAPHICRADAR",
-    'dataProductCode': "CODARCD",
+    'dataProductCode': "CD",
     'fileExtension': ".tuv"
     }
 
@@ -275,7 +274,7 @@ def main():
     print()
     
     # 1. Get list of filenames
-    req_start = "2024-01-01T00:00:00.000Z"
+    req_start = "2024-01-01T00:00:00.000Z" # NOTE: change to your desired date range
     req_end = "2025-01-01T00:00:00.000Z"
 
     filenames = get_filenames(locationCode=SOG_LOCATION, dateFrom=req_start, dateTo=req_end) # List of filenames from ONC

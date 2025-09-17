@@ -36,8 +36,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = PROJECT_ROOT / "data" 
 METADATA_ROOT = PROJECT_ROOT / "metadata"
 
-PLOT_ROOT = DATA_ROOT / "plots"
-VECTOR_ROOT = DATA_ROOT / "vectors"
+PLOT_ROOT = DATA_ROOT / "seq-plots"
+
 
 # Make sure folders exist
 DATA_ROOT.mkdir(parents=True, exist_ok=True)
@@ -48,7 +48,7 @@ TOKEN = os.getenv("ONC_TOKEN")
 MY_ONC = onc.ONC(TOKEN, outPath=str(Path(DATA_ROOT)))
 
 PLOT_CLIENT = onc.ONC(TOKEN, outPath=str(PLOT_ROOT))
-VECTOR_CLIENT = onc.ONC(TOKEN, outPath=str(VECTOR_ROOT))
+
 
 # Global variables
 API_CALL_N = 0 # Count of API calls made
@@ -104,7 +104,7 @@ def fetch_month_codar(locationCode: str,
 
     print(f"Requesting {dataProductCode} data for {locationCode} from {dateFrom} to {dateTo}")
 
-    response = PLOT_CLIENT.orderDataProduct(params, downloadResultsOnly = downloadResultsOnly) # downloadResultsOnly = True returns only the metadata
+    response = PLOT_CLIENT.orderDataProduct(params, downloadResultsOnly = False, overwrite= False, includeMetadataFile= False) # downloadResultsOnly = True returns only the metadata
 
     # # Isolate info for provenance - NOTE: done for each API call
     # query_url = response.get('queryUrl')
@@ -128,7 +128,7 @@ def fetch_month_codar(locationCode: str,
     global API_CALL_N
     API_CALL_N += 1 # Update global API call count
 
-    print(f"[monthly plot] {response.keys()}")
+    print(f"[monthly plot] {response}")
 
 def fetch_yr_codar(locationCode: str, extension: str, dateFrom: str, dateTo: str, downloadResultsOnly: bool = False) -> None:
     """
@@ -151,74 +151,15 @@ def fetch_yr_codar(locationCode: str, extension: str, dateFrom: str, dateTo: str
     # NOTE: TEST
     fetch_month_codar(locationCode = locationCode, extension = extension, downloadResultsOnly = downloadResultsOnly, dateFrom = dateFrom, dateTo = dateTo)
 
-    # Iterate through by periods of a month
-    for i, dt in enumerate(rrule.rrule(rrule.MONTHLY, dtstart = start_time, until = end_time)):
-        if i != 0:
-            # Pass dates as a strings for the API call
-            fetch_month_codar(locationCode = locationCode, dateFrom = prev.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z", dateTo = dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z")
-        prev = dt
+    # # Iterate through by periods of a month
+    # for i, dt in enumerate(rrule.rrule(rrule.MONTHLY, dtstart = start_time, until = end_time)):
+    #     if i != 0:
+    #         # Pass dates as a strings for the API call
+    #         fetch_month_codar(locationCode = locationCode, dateFrom = prev.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z", dateTo = dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z")
+    #     prev = dt
 
     return 
 
-def fetch_yr_vectors(locationCode: str, 
-                    downloadResultsOnly: bool, 
-                    dateFrom: str, 
-                    dateTo: str,
-                    extension: str = "tuv", 
-                    dataProductCode: str =  "CODARCD", 
-                    deviceCategoryCode: str = "OCEANOGRAPHICRADAR", 
-                    dpo_includeRadials: int = 0) -> None:
-    
-    """
-    Fetches all nc files for the year - probably 1 per month
-    
-    """
-    
-    # Convert string dates to datetime objects
-    start_time = datetime.fromisoformat(dateFrom.replace("Z", "+00:00"))
-    end_time = datetime.fromisoformat(dateTo.replace("Z", "+00:00"))
-
-    params = {
-        "dataProductCode": dataProductCode,
-        "locationCode": locationCode,
-        "deviceCategoryCode": deviceCategoryCode,
-        "dateFrom": dateFrom,
-        "dateTo": dateTo,
-        "extension": extension,
-        "dpo_includeRadials": dpo_includeRadials,  # don't included radials
-
-    }
-
-    print(f"Requesting {dataProductCode} data for {locationCode} from {dateFrom} to {dateTo}")
-
-    response = VECTOR_CLIENT.orderDataProduct(params, downloadResultsOnly = downloadResultsOnly) # downloadResultsOnly = True returns only the metadata
-
-    # # Isolate info for provenance - NOTE: done for each API call
-    query_url = response.get('url')
-    # citations_info = response.get('citations', '')[0]
-    url_parsed = urllib.parse.urlparse(query_url) # Parse the URL and break into components
-    print(url_parsed)
-
-    # params_minus_token = params.copy()
-    # del params_minus_token['token']
-    
-    # # Update global PROV_INFO with API call details
-    # global API_CALL_N, PROV_INFO
-
-    # PROV_INFO["api"][f"call_{API_CALL_N + 1}"] = {
-    # "endpoint": url_parsed.path.replace("/api", "", 1),
-    # "parameters": params_minus_token,
-    # "queryUrl": query_url,
-    # # "citation": citations_info['citation'],
-    # # "doi": citations_info['doi'],
-    # }
-
-    # API_CALL_N += 1 # Update global API call count
-
-    # print(f"[vector response] {response.keys()}")
-    print(f"[vector downloadResults] {response.get('downloadResults')}")
-
-    return
 
 def clean_and_manifest(data_type: str) -> pd.DataFrame:
     """
@@ -302,16 +243,14 @@ def make_prov() -> None:
 def main():
 
     start = "2023-05-01T00:00:00.000Z"
-    end = "2023-05-01T12:00:00.000Z"
+    end = "2023-05-01T10:00:00.000Z"
 
     # # Fetch plots
-    # fetch_yr_codar(locationCode = "SOGCS", extension = "png", downloadResultsOnly = False, dateFrom = start, dateTo = end)
+    fetch_yr_codar(locationCode = "SOGCS", extension = "png", downloadResultsOnly = False, dateFrom = start, dateTo = end)
 
-    # # Fetch u and v vectors
-    fetch_yr_vectors(locationCode = "SOGCS", extension = "tuv", downloadResultsOnly = False, dateFrom = start, dateTo = end)
 
     # plots_manifest = clean_and_manifest("plot")
-    # vector_manifest = clean_and_manifest("vector")
+
 
     # make_prov()
 

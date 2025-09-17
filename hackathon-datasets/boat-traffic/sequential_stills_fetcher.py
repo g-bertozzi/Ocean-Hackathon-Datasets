@@ -42,10 +42,11 @@ import time
 load_dotenv()
 
 # --- Project-root based paths ---
-# PROJECT_ROOT = Path(__file__).resolve().parent # NOTE: for testing
+# LOCAL_ROOT = Path(__file__).resolve().parent # NOTE: for testing
 PROJECT_ROOT = Path("/Volumes/Ocean-Hackathon/boat-traffic") # NOTE: for the actual data downloads
 DATA_ROOT = PROJECT_ROOT / "data" 
 METADATA_ROOT = PROJECT_ROOT / "metadata"
+LOCAL_MAN_PATH = Path("/Users/catherinebertozzi/hackathon-datasets/boat-traffic/metadata/manifest.csv")
 
 CCSS_ROOT = DATA_ROOT / "CCSS"
 CRSS_ROOT = DATA_ROOT / "CRSS"
@@ -215,7 +216,8 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
             "deviceCategoryCode": "VIDEOCAM",
             "deviceCode": deviceCode,
             "filename": fname,
-            "path": str(path)
+            "path": str(path),
+            "status": "pending"
         })
     
     # Convert list of dicts to DataFrame
@@ -256,7 +258,7 @@ def filenames_to_manifest(filenames: list[str], locationCode: str, challenge: st
 
     return df
 
-def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsample: int | None = None, per_file_sleep: float = 0.05) -> None:
+def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsample: int | None = None, per_file_sleep: float = 0.3) -> None:
     """
     Download files listed in `manifest_df`.
 
@@ -280,7 +282,7 @@ def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsamp
     else: 
         client = MY_ONC
 
-    for _, row in df.iterrows():
+    for i, row in df.iterrows():
         # Build relative path: locationCode/filename
         fname= Path(row["filename"])
         dest = client.outPath / fname
@@ -289,32 +291,43 @@ def download_from_manifest(manifest_df: pd.DataFrame, locationCode: str, subsamp
         # Skip if already downloaded
         if dest.exists():
             skipped += 1
+            df.at[i, "status"] = "done"
             continue
 
         try:
             client.getFile(str(fname))
-
+            df.at[i, "status"] = "done"
             ok += 1
         except Exception as e:
             print(f"[ERROR] {fname}: {e}")
             failed += 1
+            df.at[i, "status"] = "failed"
         
         # Sleep between downloads
-        time.sleep(0.3)
+        time.sleep(per_file_sleep)
+    
+        # Update local manifest every N files
+        if (ok + skipped + failed) % 100 == 0:  
+            # ensure the parent dir exists
+            LOCAL_MAN_PATH.parent.mkdir(parents=True, exist_ok=True)
+            df.to_csv(LOCAL_MAN_PATH, index=False)
+            print(f"[Number files processed] {ok + skipped + failed}")
+    
+    df.to_csv(LOCAL_MAN_PATH, index=False)
 
     print(f"[done] ok={ok} skipped={skipped} failed={failed}")
     print(f"Finished downloading files for {locationCode}.")
 
     return
 
-def make_prov(metadata_root: str = "./metadata") -> None:
+def make_prov() -> None:
     """
     Save provenance info dictionary to a YAML file.
 
     Inputs:
     Output:
     """
-    output_path = Path(metadata_root) / "provenance.yaml"
+    output_path = Path(METADATA_ROOT) / "provenance.yaml"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(output_path, "w") as f:
@@ -359,7 +372,7 @@ def main():
 
     # REAL DEAL DOWNLOAD
     download_from_manifest(manifest_df = china_manifest_df, locationCode = CHINA_LOCATION)
-    download_from_manifest(manifest_df = mudge_manifest_df, locationCode = MUDGE_LOCATION)
+    # download_from_manifest(manifest_df = mudge_manifest_df, locationCode = MUDGE_LOCATION)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,8 @@
+"""
+
+
+"""
+
 # Import SDKs
 import threading
 import traceback
@@ -19,8 +24,8 @@ load_dotenv()
 
 # Project paths
 PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_ROOT = PROJECT_ROOT / "data/plots-2024"
-METADATA_ROOT = PROJECT_ROOT / "metadata/plots-2024"
+DATA_ROOT = PROJECT_ROOT / "data/plots-m-2023"
+METADATA_ROOT = PROJECT_ROOT / "metadata/plots-m-2023"
 BATCH_MANIFEST_PATH = METADATA_ROOT / "batch-manifest.csv"
 PROVENANCE_PATH = METADATA_ROOT / "provenance.yaml"
 
@@ -43,7 +48,7 @@ MAX_RETRIES = 3
 POLL_INTERVAL = 5
 
 # Base parameters
-DATA_PRODUCT_CODE = "CODARQCSC"
+DATA_PRODUCT_CODE = "CODARCD"
 DEVICE_CATEGORY_CODE = "OCEANOGRAPHICRADAR"
 EXT = "png"
 LOCATION_CODE = "SOGCS"
@@ -112,7 +117,7 @@ def manifest_to_prov():
     with open(PROVENANCE_PATH, "w") as f:
         yaml.dump(prov, f, default_flow_style=False, sort_keys=False)
 
-def build_quartermonth_batches(year: int = 2023) -> pd.DataFrame:
+def build_quartermonth_batches(year: int) -> pd.DataFrame:
     """
     Makes quarter-of-month batch manifest and uses requestDataProduct method to request data products for each batch.
 
@@ -170,7 +175,7 @@ def build_quartermonth_batches(year: int = 2023) -> pd.DataFrame:
 
     return pd.DataFrame(rows)
 
-def load_or_init_batch_manifest(year: int = 2023) -> None:
+def load_or_init_batch_manifest(year: int) -> None:
     """ 
     Points global BATCH_MANIFEST to the exisiting csv file df or a new df. 
     Schema: [dpRequestId: int, runIds: int or None, batch_id: str, start: iso str , end: iso str, last_call_ran: str, call_status: str, file_count: int, downloaded: bool]
@@ -184,7 +189,7 @@ def load_or_init_batch_manifest(year: int = 2023) -> None:
         for idx, row in BATCH_MANIFEST.iterrows():
             if row["downloaded"] != True: 
                 re_start = row["start"]
-                re_end = ["end"]
+                re_end = row["end"]
 
                 params = {
                     "dateFrom": re_start,
@@ -274,7 +279,7 @@ def download_dp(runIds: int, dpRequestId: int):
     response = PLOT_CLIENT.downloadDataProduct(runId=runIds, 
                                             maxRetries=3, 
                                             downloadResultsOnly=False, 
-                                            includeMetadataFile=False, 
+                                            includeMetadataFile=True, 
                                             overwrite=False)
 
     # Poll until cart closes
@@ -299,7 +304,10 @@ def download_dp(runIds: int, dpRequestId: int):
 
 def worker():
     """
-    
+    Each worker:
+    - pulls file_info dict/ row from download queue
+    - attempts to get runIds except errors, requeues if no runIds returned (max retries = 3)
+    - attempts to download (max retries = 3, API retries = 3) 
     """
 
     while True:
@@ -340,7 +348,6 @@ def worker():
             try:
                 download_dp(runIds=run_id, dpRequestId=req_id)
                 success = True
-        
                 break
             except Exception as e:
                 print(f"[worker] download_dp failed (attempt {attempt+1}): {e}")
@@ -363,13 +370,9 @@ def main():
 
     global BATCH_MANIFEST, DOWNLOAD_QUEUE
 
-    
-
     # 1. Init batch manifest
-    load_or_init_batch_manifest(year=2024)
-
+    load_or_init_batch_manifest(year=2023)
     print(BATCH_MANIFEST)
-
 
     # 2. Build download queue -- do we need to check current request vs historical batch?
     for _, row in BATCH_MANIFEST.iterrows():
@@ -411,37 +414,6 @@ def main():
     print(f"Successful batches      : {success_batches}")
     print(f"Failed batches          : {failed_batches}")
     print(f"Elapsed time            : {elapsed_sec/60} mins")
-
-    """
-    Flow:
-
-
-    1. load or init batch manifest
-        - if csv exists: load into BATCH_MANIFEST global dataframe
-        - else build 1/4 month batches df and point BATCH_MANIFEST global dataframe
-    
-
-    2. iterate through BATCH_MANIFEST and append row to queue if not downloaded 
-
-    3. workers
-        - pull batch from queue
-        - runDataProduct(dpRequestId) -> runIds saved to batch manifest
-
-        - downloadDataProdct()
-        - orderDataProduct
-            - {params, maxRetries = 3, downloadResultsOnly = False, includeMetadataFile = False, overwrite = False}
-
-        - at end of each batch:
-            
-            - retry logic for failed downloads?
-                - if ANY file fails we would have to requeue the entire batch
-                    - would successful ones just be over written?
-
-            - batch records:
-                - mark batch as done in batch manifest
-                - write batch manifest to csv
-
-    """
 
 if __name__ == "__main__":
     main()
