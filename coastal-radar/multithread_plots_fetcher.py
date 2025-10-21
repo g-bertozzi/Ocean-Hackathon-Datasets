@@ -24,8 +24,8 @@ load_dotenv()
 
 # Project paths
 PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_ROOT = PROJECT_ROOT / "data/plots-m-2023"
-METADATA_ROOT = PROJECT_ROOT / "metadata/plots-m-2023"
+DATA_ROOT = PROJECT_ROOT / "data/plots-2025"
+METADATA_ROOT = PROJECT_ROOT / "metadata/plots-2025"
 BATCH_MANIFEST_PATH = METADATA_ROOT / "batch-manifest.csv"
 PROVENANCE_PATH = METADATA_ROOT / "provenance.yaml"
 
@@ -134,7 +134,7 @@ def build_quartermonth_batches(year: int) -> pd.DataFrame:
         (24, None) # Q4 handled specially
     ] 
     
-    for month in range(1, 13):
+    for month in [11,12]:
         for q, (start_day, end_day) in enumerate(quarter_days, start=1):
             start = pd.Timestamp(year=year, month=month, day=start_day, tz="UTC")
 
@@ -371,7 +371,7 @@ def main():
     global BATCH_MANIFEST, DOWNLOAD_QUEUE
 
     # 1. Init batch manifest
-    load_or_init_batch_manifest(year=2023)
+    load_or_init_batch_manifest(year=2022)
     print(BATCH_MANIFEST)
 
     # 2. Build download queue -- do we need to check current request vs historical batch?

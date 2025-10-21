@@ -30,10 +30,10 @@ import queue
 load_dotenv()
 
 # --- Project-root based paths ---
-LOCATION_CODE = "CRSS"
+LOCATION_CODE = "CCSS"
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_ROOT = PROJECT_ROOT / "data" / LOCATION_CODE
+DATA_ROOT = PROJECT_ROOT / LOCATION_CODE
 METADATA_ROOT = PROJECT_ROOT / "metadata" / LOCATION_CODE
 
 MANIFEST_PATH = Path(METADATA_ROOT) / "manifest.csv"
@@ -102,7 +102,7 @@ def write_manifest() -> None:
         MANIFEST_DF.to_csv(MANIFEST_PATH, index=False)
     print(f"[write_manifest] Final manifest save complete. {len(MANIFEST_DF)} total entries.")
 
-def write_prov(method: str) -> None:
+def write_prov() -> None:
     """ Updates with download api call info and saves to YAML. Called once at end of main. """
     global API_CALL_N, PROV_INFO
 

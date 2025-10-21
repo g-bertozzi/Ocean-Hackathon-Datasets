@@ -89,7 +89,7 @@ def get_filenames(locationCode: str, dateFrom: str, dateTo: str) -> list[str]:
     'dateFrom': dateFrom,
     'dateTo': dateTo,
     'deviceCategoryCode': "OCEANOGRAPHICRADAR",
-    'dataProductCode': "CD",
+    'dataProductCode': "CODARCD",
     'fileExtension': ".tuv"
     }
 
@@ -274,8 +274,8 @@ def main():
     print()
     
     # 1. Get list of filenames
-    req_start = "2024-01-01T00:00:00.000Z" # NOTE: change to your desired date range
-    req_end = "2025-01-01T00:00:00.000Z"
+    req_start = "2023-01-01T00:00:00.000Z" # NOTE: change to your desired date range
+    req_end = "2024-01-01T00:00:00.000Z"
 
     filenames = get_filenames(locationCode=SOG_LOCATION, dateFrom=req_start, dateTo=req_end) # List of filenames from ONC
     file_info = filenames_to_file_info(filenames=filenames, locationCode=SOG_LOCATION) # DataFrame with metadata parsed from filenames
