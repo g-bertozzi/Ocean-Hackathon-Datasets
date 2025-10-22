@@ -1,5 +1,5 @@
 """
-Multithreaded Vector Data Fetcher
+Multithreaded CODAR Vector Fetcher
 =================================
 
 Fetches hourly CODAR surface-current vector files from Ocean Networks Canada (ONC)
@@ -94,7 +94,9 @@ from dataclasses import dataclass
 # Setup
 # ==============================
 
+load_dotenv() # Environmental variables
 
+# Command line arguments
 @dataclass(frozen=True)
 class Config:
     start: str
@@ -126,9 +128,7 @@ def parse_args() -> Config:
     args = parser.parse_args()
     return Config(start=args.start, end=args.end, workers=args.workers)
 
-
-load_dotenv()
-
+# Logging
 def setup_logging():
     logging.basicConfig(
         level=logging.INFO,  # can change to DEBUG for more detail
@@ -163,7 +163,6 @@ VECTOR_CLIENT = onc.ONC(TOKEN, outPath=str(DATA_ROOT))
 
 # Globals
 API_PARAMS: dict = {}  # For provenance
-
 DOWNLOAD_QUEUE: "queue.Queue[pd.Series | dict]" = queue.Queue()
 MANIFEST_DF: pd.DataFrame
 FILES_SUCCESS: int = 0
@@ -182,7 +181,7 @@ MANIFEST_COLUMNS = [
     "status",
 ]
 
-CODAR_PARAMS = {
+VECTOR_PARAMS = {
     "locationCode": DEFAULT_LOCATION,
     "deviceCategoryCode": "OCEANOGRAPHICRADAR",
     "dataProductCode": "CODARCD",
@@ -231,7 +230,7 @@ def get_filenames(dateFrom: str, dateTo: str) -> list[str]:
     """
     global DEFAULT_LOCATION
 
-    params = CODAR_PARAMS | {"dateFrom": dateFrom, "dateTo": dateTo} # Append with global
+    params = VECTOR_PARAMS | {"dateFrom": dateFrom, "dateTo": dateTo} # Append with global
 
     response = VECTOR_CLIENT.getArchivefileByLocation(params)
     filenames = response.get("files", [])
