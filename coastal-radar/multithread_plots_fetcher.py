@@ -46,13 +46,11 @@ Run from any directory (downloads go to ~/Downloads/surface-currents):
 
     export ONC_TOKEN=<your_api_key>
     python multithread_plot_fetcher.py \
-        --year 2025 \
-        --workers 12
+        --year 2025
 
 Arguments
 ---------
 --year       Year to fetch (required)
---workers    Number of parallel download threads (default: 15)
 
 Outputs
 -------
@@ -99,14 +97,13 @@ load_dotenv() # Environmental variables
 @dataclass(frozen=True)
 class Config:
     year: int
-    workers: int
 
 def parse_args() -> Config:
-    p = argparse.ArgumentParser(description="Fetch CODAR plot images in quarter-month batches.")
-    p.add_argument("--year", type=int, required=True, help="Year to fetch (e.g., 2025)")
-    p.add_argument("--workers", type=int, default=15, help="Concurrent threads (default: 15)")
-    a = p.parse_args()
-    return Config(year=a.year, workers=a.workers)
+    """Parse command-line arguments for year."""
+    parser = argparse.ArgumentParser(description="Fetch CODAR plot images in quarter-month batches.")
+    parser.add_argument("--year", type=int, required=True, help="Year to fetch (e.g., 2025)")
+    args = parser.parse_args()
+    return Config(year=args.year)
 
 # Logging
 def setup_logging():
@@ -140,7 +137,6 @@ if not TOKEN:
     raise RuntimeError("ONC_TOKEN is not set. Export your ONC API key before running.")
 PLOT_CLIENT = onc.ONC(TOKEN, outPath=str(DATA_ROOT))
 
-
 # Globals
 BATCH_MANIFEST: Optional[pd.DataFrame] = None
 DOWNLOAD_QUEUE: "queue.Queue[dict]" = queue.Queue()
@@ -155,7 +151,7 @@ PLOT_PARAMS = {
     "locationCode": DEFAULT_LOCATION,
     "deviceCategoryCode": "OCEANOGRAPHICRADAR",
     "dataProductCode": "CODARCD", # manufacturer not quality controlled
-    "extension": "png", # NOTE: for plots
+    "extension": "png", # for plots
     "dpo_includeRadials": 0,
 }
 
@@ -229,7 +225,6 @@ def manifest_to_prov():
     prov["last_updated"] = utc_now_isoz()
     with open(PROVENANCE_PATH, "w", encoding="utf-8") as f:
         yaml.safe_dump(prov, f, default_flow_style=False, sort_keys=False)
-
 
 def build_quartermonth_batches(year: int) -> pd.DataFrame:
     """
@@ -335,13 +330,12 @@ def cart_complete(dp_request_id: int) -> bool:
     cart_status = response.get("cartStatus")
     return cart_status == 0
 
-
 def run_dp(dp_request_id: int) -> list[int]:
     """ 
     Takes dp_request_id from requestDataProduct and returns run_ids. 
     Updates BATCH_MANIFEST with runIds, last_call_ran, call_status.
 
-    NOTE: No error handling? either returns the Id or an error
+    NOTE: No error handling- either returns the Id or an errors
     """
  
     log.info(f"[run_dp] trying to get runIds for requestId {dp_request_id} at {datetime.now().strftime(HUMAN)}.")
@@ -458,7 +452,6 @@ def worker() -> None:
 
             # Always log manifest snapshot
             log.info(f"[worker] manifest after download_dp for requestId={req_id}\n{BATCH_MANIFEST}")
-
 
         finally:
             # Always mark the dequeued item as processed to avoid deadlocks

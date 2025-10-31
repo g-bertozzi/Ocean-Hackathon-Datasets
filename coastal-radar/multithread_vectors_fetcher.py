@@ -73,18 +73,17 @@ import os
 import queue
 import threading
 import time
+import logging
+import sys
+import argparse
 from pathlib import Path
 from datetime import UTC, datetime
+from dataclasses import dataclass
+from dotenv import load_dotenv
 
 import onc
 import pandas as pd
 import yaml
-from dotenv import load_dotenv
-
-import logging
-import sys
-import argparse
-from dataclasses import dataclass
 
 # ==============================
 # Setup
@@ -95,6 +94,7 @@ load_dotenv() # Environmental variables
 # Data class to store CLI
 @dataclass(frozen=True)
 class Config:
+    """ """
     start: str
     end: str
 
@@ -109,6 +109,7 @@ def parse_args() -> Config:
 
 # Logging (thread safe)
 def setup_logging():
+    """ """
     logging.basicConfig(
         level=logging.INFO,  # NOTE: can change to DEBUG for more detail??
         format="%(asctime)s %(levelname)s %(message)s",
@@ -150,7 +151,7 @@ files_failed: int = 0
 manifest_lock = threading.Lock() # (muteable) global lock for manifest writes
 
 MANIFEST_COLUMNS = [
-    "timestamp",
+    "timestamp", # timetstamp UTC aware
     "locationCode",
     "deviceCategoryCode",
     "deviceCode",
@@ -198,24 +199,24 @@ def load_or_init_manifest() -> None:
     else:
         manifest_df = pd.DataFrame(columns=MANIFEST_COLUMNS)
 
-def get_filenames(dateFrom: str, dateTo: str) -> list[str]:
+def get_filenames(date_from: str, date_to: str) -> list[str]:
     """Return list of filenames via ONC archive listing.
 
     Example filename:
         "RDLm12345_20231123T234501.000Z.tuv"
     """
-    global DEFAULT_LOCATION
-
-    params = VECTOR_PARAMS | {"dateFrom": dateFrom, "dateTo": dateTo} # Append with global
+    params = VECTOR_PARAMS | {"dateFrom": date_from, "dateTo": date_to} # Append with global
 
     response = VECTOR_CLIENT.getArchivefileByLocation(params)
     filenames = response.get("files", [])
 
     log.info(
-        f"[get_filenames] Requesting files for {DEFAULT_LOCATION} "
-        f"{dateFrom} → {dateTo}."
+        "[get_filenames] Requesting vector files for %s → %s",
+        date_from,
+        date_to,
     )
-    log.info(f"[get_filenames] Files returned: {len(filenames)}\n")
+
+    log.info("[get_filenames] Files returned: %d\n", len(filenames))
 
     # Update dict for provenance (do not include token)
     global api_params
@@ -233,7 +234,6 @@ def filenames_to_file_info(filenames: list[str]) -> pd.DataFrame:
         ["timestamp","locationCode","deviceCategoryCode",
          "deviceCode","filename","path"]
     """
-    global DEFAULT_LOCATION
 
     log.info("[filenames_to_file_info] Building file info table.\n")
 
@@ -252,7 +252,7 @@ def filenames_to_file_info(filenames: list[str]) -> pd.DataFrame:
         rows.append(
             {
                 "timestamp": ts,
-                "locationCode": DEFAULT_LOCATION,
+                "locationCode": DEFAULT_LOCATION, 
                 "deviceCategoryCode": "OCEANOGRAPHICRADAR",
                 "deviceCode": device_code,
                 "filename": fname,
@@ -291,14 +291,15 @@ def write_provenance() -> None:
     with open(PROVENANCE_PATH, "w", encoding="utf-8") as f:
         yaml.safe_dump(provenance, f, sort_keys=False)
 
-    log.info(f"[write_provenance] Wrote provenance → {PROVENANCE_PATH}")
+    log.info("[write_provenance] Wrote provenance → %s", PROVENANCE_PATH)
 
 def write_manifest() -> None:
     """Save the global manifest DataFrame to CSV."""
-    with manifest_lock:
-        manifest_df.to_csv(MANIFEST_PATH, index=False)
-    log.info(f"[write_manifest] Saved manifest → {MANIFEST_PATH} "
-             f"({len(manifest_df)} rows)")
+    manifest_df.to_csv(MANIFEST_PATH, index=False)
+    log.info("[write_manifest] Saved manifest → %s\n%d rows",
+        MANIFEST_PATH,
+        len(manifest_df),
+    )
 
 # ==============================
 # Thread workers
@@ -326,7 +327,7 @@ def worker() -> None:
         download_queue.task_done()
 
 def update_manifest_df(file_info: dict | pd.Series, success: bool) -> None:
-    """Upsert a row in manifest_df for the file with updated status."""
+    """Update/insert a row in manifest_df for the file with updated status."""
     global manifest_df
 
     filename = str(file_info["filename"])
@@ -356,10 +357,13 @@ def periodic_manifest_save(interval: int = 90) -> None:
         time.sleep(interval)
         with manifest_lock:
             manifest_df.to_csv(MANIFEST_PATH, index=False)
+            # Use lazy %-style formatting for logging and call utc_now_isoz()
             log.info(
-                f"[periodic_manifest_save] {datetime.now(UTC).isoformat().replace("+00:00", "Z")}"
-                f"Processed: {files_success + files_failed}, "
-                f"Success: {files_success}, Failed: {files_failed}"
+                "[periodic_manifest_save] %s Processed: %d, Success: %d, Failed: %d",
+                utc_now_isoz(),
+                files_success + files_failed,
+                files_success,
+                files_failed,
             )
 
 def download_file(file_info: dict | pd.Series) -> bool:
@@ -368,41 +372,43 @@ def download_file(file_info: dict | pd.Series) -> bool:
         VECTOR_CLIENT.getFile(str(file_info["filename"]))
         time.sleep(1)  # small pacing to be gentle to API/filesystem
         return True
-    except Exception as exc:  # noqa: BLE001
-        log.error(f"[download_file] Failed for {file_info['filename']}: {exc}\n")
+    except (OSError, ConnectionError, RuntimeError) as exc:
+        # Catch common I/O / network / runtime errors raised by the client or filesystem
+        log.error(
+            "[download_file] Failed for %s: %s",
+            file_info['filename'],
+            exc,
+        )
         return False
 
 # ==============================
 # Main
 # ==============================
-
 def main() -> None:
-    global DEFAULT_LOCATION
+    """ """
 
     # A: Initial logging
     start_time = time.time()
-    log.info(f"[Main] ===== Start vector fetcher @ {start_time:.2f} =====")
-    log.info(f"[Main] Data root: {DATA_ROOT}\n")
+    log.info("[Main] ===== Start vector fetcher @ %.2f =====", start_time)
+    log.info("[Main] Data root: %s\n", DATA_ROOT)
 
-    # 1) Get list of filenames
+    # 1) Get list of filenames in current request
     cfg = parse_args()
     req_start = cfg.start
     req_end = cfg.end
 
     filenames = get_filenames(
-        # locationCode=DEFAULT_LOCATION,
-        dateFrom=req_start,
-        dateTo=req_end,
+        date_from=req_start,
+        date_to=req_end,
     )
     file_info_df = filenames_to_file_info(
         filenames=filenames,
-        # locationCode=DEFAULT_LOCATION,
     )
 
-    # 2) Load or initialize global manifest
+    # 2) Load or initialize global manifest (get historical downloads)
     load_or_init_manifest()
 
-    # 3) Find files that are new or previously failed
+    # 3) Find files that are new or previously failed (files from present request are not downloaded already)
     merged = file_info_df.merge(
         manifest_df[["filename", "status"]],
         on="filename",
@@ -446,12 +452,12 @@ def main() -> None:
     thread_alive_time = (end_time - threads_start_time) / 60
     total_minutes = (end_time - start_time) / 60
     log.info(
-        f"[Main] ===== Processed {files_success + files_failed} files "
-        f"in {total_minutes:.2f} min with {num_workers} threads. ====="
+        "[Main] ===== Processed %d files in %.2f min with %d threads. =====",
+        files_success + files_failed,
+        total_minutes,
+        num_workers,
     )
-    log.info(
-        f"[Main] Sequential estimate: {setup_time + (thread_alive_time * num_workers):.2f} min."
-    )
+    log.info("[Main] Sequential estimate: %.2f minutes.", setup_time + (thread_alive_time * num_workers))
 
 if __name__ == "__main__":
     main()

@@ -27,27 +27,37 @@ import onc
 import time
 import queue
 
+# ==============================
+# Setup
+# ==============================
+
 load_dotenv()
 
 # --- Project-root based paths ---
 LOCATION_CODE = "CCSS"
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-DATA_ROOT = PROJECT_ROOT / LOCATION_CODE
-METADATA_ROOT = PROJECT_ROOT / "metadata" / LOCATION_CODE
+DOWNLOADS_PATH = Path.home() / "Downloads"
+DATA_ROOT = DOWNLOADS_PATH / "boat-traffic" / LOCATION_CODE
+METADATA_ROOT = DOWNLOADS_PATH / "boat-traffic-metadata" / LOCATION_CODE
 
 MANIFEST_PATH = Path(METADATA_ROOT) / "manifest.csv"
 PROVENANCE_PATH = Path(METADATA_ROOT) / "provenance.yaml"
 
-# --- ONC API client setup ---
+# Ensure folders exist
+DATA_ROOT.mkdir(parents=True, exist_ok=True)
+METADATA_ROOT.mkdir(parents=True, exist_ok=True)
+
+# ONC client
 TOKEN = os.getenv("ONC_TOKEN")
+if not TOKEN:
+    raise RuntimeError("ONC_TOKEN is not set. Please export your ONC API key before running.")
 LOCATION_CLIENT = onc.ONC(TOKEN, outPath=str(Path(DATA_ROOT)))
 
-# MORE GLOBALS
-FILES_SUCCESS = 0
+# Globals
+FILES_SUCCESS = 0 # CS
 MAX_RETRIES = 3
-API_CALL_N = 0 # Count of API calls made    
-DOWNLOAD_QUEUE = queue.Queue()
+API_CALL_N = 0 #CS?
+DOWNLOAD_QUEUE = queue.Queue() # CS but thread safe already
 manifest_lock = threading.Lock()
 
 PROV_INFO = {
@@ -66,19 +76,22 @@ PROV_INFO = {
     }
 }
 
-# FUNCTIONS
-def setup_paths() -> dict:
-    """Ensure required directories exist. Call once at runtime, not at import."""
-    for path in [DATA_ROOT, METADATA_ROOT, MANIFEST_PATH.parent, PROVENANCE_PATH.parent]:
-        path.mkdir(parents=True, exist_ok=True)
+# ==============================
+# Functions
+# ==============================
 
-    return {
-        "project_root": PROJECT_ROOT,
-        "data_root": DATA_ROOT,
-        "metadata_root": METADATA_ROOT,
-        "manifest_path": MANIFEST_PATH,
-        "provenance_path": PROVENANCE_PATH,
-    }
+# def setup_paths() -> dict:
+#     """Ensure required directories exist. Call once at runtime, not at import."""
+#     for path in [DATA_ROOT, METADATA_ROOT, MANIFEST_PATH.parent, PROVENANCE_PATH.parent]:
+#         path.mkdir(parents=True, exist_ok=True)
+
+#     return {
+#         "project_root": PROJECT_ROOT,
+#         "data_root": DATA_ROOT,
+#         "metadata_root": METADATA_ROOT,
+#         "manifest_path": MANIFEST_PATH,
+#         "provenance_path": PROVENANCE_PATH,
+#     }
 
 def load_or_init_manifest() -> None: 
     """ 
@@ -229,7 +242,6 @@ def filenames_to_file_info(filenames: list[str], locationCode: str) -> pd.DataFr
             "filename": fname,
             "path": str(path)
         })
-    
 
     return pd.DataFrame(rows)
 
@@ -380,7 +392,7 @@ def periodic_manifest_save(interval: int = 60) -> None:
 
 def main():
 
-    setup_paths()
+    # setup_paths()
 
     # A: logging
     start_time = time.time()
