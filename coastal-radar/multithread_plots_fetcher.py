@@ -311,7 +311,8 @@ def make_dp_request(filters: dict) -> int:
     """Make data product request. Returns data product request id."""
     response = PLOT_CLIENT.requestDataProduct(filters=filters)
     dpRequestId = response.get("dpRequestId")
-    log.info(f"[requestDataProduct] dpRequestId: {dpRequestId}")
+    log.info("[requestDataProduct] dpRequestId: %s", dpRequestId)
+
     return dpRequestId
 
 # ==============================
@@ -338,7 +339,7 @@ def run_dp(dp_request_id: int) -> list[int]:
     NOTE: No error handling- either returns the Id or an errors
     """
  
-    log.info(f"[run_dp] trying to get runIds for requestId {dp_request_id} at {datetime.now().strftime(HUMAN)}.")
+    log.info("[run_dp] trying to get runIds for requestId %s at %s.", dp_request_id, datetime.now().strftime(HUMAN))
 
     global BATCH_MANIFEST
 
@@ -348,7 +349,7 @@ def run_dp(dp_request_id: int) -> list[int]:
         raise ValueError(f"Missing runIds in response: {response}")
     run_ids = raw if isinstance(raw, list) else [raw]
 
-    log.info(f"[run_dp] got runIds {run_ids} for requestId {dp_request_id} at {datetime.now().strftime(HUMAN)}.")
+    log.info("[run_dp] got runIds %s for requestId %s at %s.", run_ids, dp_request_id, datetime.now().strftime(HUMAN))
 
     call_status = response.get("status") # Get status of runDataProduct -- waitComplete should wait for status == 'complete'
     num_files = response.get("fileCount")
@@ -365,7 +366,7 @@ def run_dp(dp_request_id: int) -> list[int]:
 def download_dp(run_ids: int, dp_request_id: int):
     """Takes dp_request_id from requestDataProduct and run_ids from runDataProduct and returns True unless error is raised by API."""
     
-    log.info(f"[download_dp] trying to download for requestId {dp_request_id} runIds {run_ids} at {datetime.now().strftime(HUMAN)}.")
+    log.info("[download_dp] trying to download for requestId %s runIds %s at {datetime.now().strftime(HUMAN)}.", dp_request_id, run_ids)
 
     global BATCH_MANIFEST
 
@@ -378,9 +379,9 @@ def download_dp(run_ids: int, dp_request_id: int):
     # Poll until cart closes
     while cart_complete(dp_request_id=dp_request_id) is False:
         time.sleep(3)
-        log.info(f"[download_dp] requestId {dp_request_id} downloading in progess.")
+        log.info("[download_dp] requestId %s downloading in progess.", dp_request_id)
         
-    log.info(f"[download_dp] downloaded runIds {run_ids} at {datetime.now().strftime(HUMAN)}.")
+    log.info("[download_dp] downloaded runIds %s at {datetime.now().strftime(HUMAN)}.", run_ids)
 
     with batch_lock:
         # update batch manifest last_call_ran
@@ -418,16 +419,21 @@ def worker() -> None:
                 try:
                     run_ids = run_dp(dp_request_id=req_id)  # expected list[int]
                     cur_run_id = int(run_ids[0])
-                    log.info(f"[worker] runDataProduct OK for requestId={req_id} (runId={cur_run_id})")
+                    log.info("[worker] runDataProduct OK for requestId=%s (runId=%s)", req_id, cur_run_id)
                     break
                 except Exception as exc:
-                    log.error(f"[worker] runDataProduct failed (attempt {attempt}/{MAX_RETRIES}) "
-                              f"for requestId={req_id}: {exc}")
+                    log.error(
+                        "[worker] runDataProduct failed (attempt %d/%d\nfor requestId=%s: %s",
+                        attempt,
+                        MAX_RETRIES,
+                        req_id,
+                        exc,
+                    )
                     log.exception(exc)
                     time.sleep(5)
 
             if cur_run_id is None:
-                log.error(f"[worker] runDataProduct failed permanently for requestId={req_id}")
+                log.error("[worker] runDataProduct failed permanently for requestId=%s",req_id)
                 continue  # go to finally -> task_done()
 
             # Always log manifest snapshot
@@ -439,19 +445,23 @@ def worker() -> None:
                 try:
                     download_dp(run_ids=cur_run_id, dp_request_id=req_id)
                     success = True
-                    log.info(f"[worker] downloadDataProduct OK for requestId={req_id} (runId={cur_run_id})")
+                    log.info("[worker] downloadDataProduct OK for requestId=%s (runId=%s)", req_id, cur_run_id)
                     break
                 except Exception as exc:
-                    log.error(f"[worker] download_dp failed (attempt {attempt}/{MAX_RETRIES}) "
-                              f"for requestId={req_id}: {exc}")
+                    log.error("[worker] download_dp failed (attempt %d/%d\nfor requestId=%s: %s",
+                            attempt,
+                            MAX_RETRIES,
+                            req_id,
+                            exc,
+                    )
                     log.exception(exc)
                     time.sleep(5)
 
             if not success:
-                log.error(f"[worker] download_dp failed permanently for requestId={req_id}")
+                log.error("[worker] download_dp failed permanently for requestId=%s", req_id)
 
             # Always log manifest snapshot
-            log.info(f"[worker] manifest after download_dp for requestId={req_id}\n{BATCH_MANIFEST}")
+            log.info("[worker] manifest after download_dp for requestId=%s\n%s", req_id,BATCH_MANIFEST)
 
         finally:
             # Always mark the dequeued item as processed to avoid deadlocks
@@ -460,7 +470,7 @@ def worker() -> None:
 def main():
     # A. Initial Logging
     start_time = datetime.now()  # start timer
-    log.info(f"[main] ===== BATCH START ===== at {ts_to_isoz(start_time)}.")
+    log.info("[main] ===== BATCH START ===== at %s.", ts_to_isoz(start_time))
 
     global BATCH_MANIFEST, DOWNLOAD_QUEUE
     cfg = parse_args()
@@ -471,15 +481,15 @@ def main():
 
     # 2. Build download queue -- do we need to check current request vs historical batch?
     for _, row in BATCH_MANIFEST.iterrows():
-        if row["downloaded"] != True: # Enqueue all batches not yet downloaded
+        if not row["downloaded"]: # Enqueue all batches not yet downloaded
             DOWNLOAD_QUEUE.put(row.to_dict())
-            log.info(f"[main] queueing dpRequestId: {row['dpRequestId']}, start: {row['start']}, end: {row['end']}")
+            log.info("[main] queueing dpRequestId: %s, start: %s, end: %s", row['dpRequestId'], row['start'], row['end'])
     
     # 3. Start threads
-    num_workers = cfg.workers
+    num_workers = 15
     threads = []
 
-    log.info(f"[main] Starting {num_workers} threads.")
+    log.info("[main] Starting %d threads.", num_workers)
     for _ in range(num_workers):
         t = threading.Thread(target=worker)
         t.start() # Initialize and start thread object 't'
@@ -499,16 +509,17 @@ def main():
     elapsed_seconds = (end_time - start_time).total_seconds()
 
     total_batches = len(BATCH_MANIFEST)
-    success_batches = len(BATCH_MANIFEST[BATCH_MANIFEST["downloaded"] == True])
-    failed_batches = len(BATCH_MANIFEST[BATCH_MANIFEST["downloaded"] == False])
-    files_downloaded = BATCH_MANIFEST.loc[BATCH_MANIFEST["downloaded"] == True, "file_count"].sum()
+    success_batches = len(BATCH_MANIFEST[BATCH_MANIFEST["downloaded"] is True])
+    failed_batches = len(BATCH_MANIFEST[BATCH_MANIFEST["downloaded"] is False])
+    files_downloaded = BATCH_MANIFEST.loc[BATCH_MANIFEST["downloaded"] is True, "file_count"].sum()
 
     log.info("\n===== BATCH DOWNLOAD SUMMARY =====")
-    log.info(f"Total batches processed : {total_batches}")
-    log.info(f"Total files downloaded  : {files_downloaded}")
-    log.info(f"Successful batches      : {success_batches}")
-    log.info(f"Failed batches          : {failed_batches}")
-    log.info(f"Elapsed time            : {elapsed_seconds/60:.2f} mins")
+    log.info("Total batches processed : %d", total_batches)
+    log.info("Total files downloaded  : %d", files_downloaded)
+    log.info("Successful batches      : %d", success_batches)
+    log.info("Failed batches          : %d", failed_batches)
+    log.info("Elapsed time            : %.2f mins", elapsed_seconds/60)
+
 
 if __name__ == "__main__":
     main()
