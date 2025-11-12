@@ -167,9 +167,8 @@ def utc_now_isoz() -> str:
 
 def manifest_to_prov():
     """ Writes a provenance to yaml according to the final batch_manifest. """
-    global batch_manifest
 
-    downloaded_files = int(batch_manifest.loc[batch_manifest["downloaded"] == True, "file_count"].sum())
+    downloaded_files = int(batch_manifest.loc[batch_manifest["downloaded"], "file_count"].sum())
     
     prov = {
         "challenge": "surface-currents",
@@ -321,7 +320,7 @@ def make_dp_request(filters: dict) -> int:
 
 def save_batch_manifest():
     """Write batch manifest to disk (call after finishing a batch)."""
-    global batch_manifest
+
     with batch_lock:
         batch_manifest.to_csv(BATCH_MANIFEST_PATH, index=False)
 
@@ -342,8 +341,6 @@ def run_dp(dp_request_id: int) -> list[int]:
     log.info("[run_dp] trying to get runIds for requestId %s at %s.",
              dp_request_id,
              datetime.now().strftime(HUMAN))
-
-    global batch_manifest
 
     response = PLOT_CLIENT.runDataProduct(dpRequestId=dp_request_id, waitComplete=True)
     raw = response.get("runIds")
@@ -375,8 +372,6 @@ def download_dp(run_ids: int, dp_request_id: int) -> bool:
              dp_request_id,
              run_ids,
              datetime.now().strftime(HUMAN))
-
-    global batch_manifest
 
     PLOT_CLIENT.downloadDataProduct(runId=run_ids,
                                     maxRetries=3,
@@ -487,7 +482,6 @@ def main():
     start_time = datetime.now()  # start timer
     log.info("[main] ===== BATCH START ===== at %s.", ts_to_isoz(start_time))
 
-    global batch_manifest, download_queue
     cfg = parse_args()
 
     # 1. Init batch manifest
@@ -534,7 +528,6 @@ def main():
     log.info("Successful batches      : %d", success_batches)
     log.info("Failed batches          : %d", failed_batches)
     log.info("Elapsed time            : %.2f mins", elapsed_seconds/60)
-
 
 if __name__ == "__main__":
     main()
