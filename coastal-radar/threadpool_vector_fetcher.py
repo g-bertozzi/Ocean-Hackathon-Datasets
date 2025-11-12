@@ -1,30 +1,75 @@
 """
-Surface current vector downloader for ONC (Oceans 3.0).
+Multithreaded CODAR Vector Fetcher
+==================================
 
-This script:
-  1) Lists CODAR vector files (.tuv) for a given time range.
-  2) Builds a manifest of expected files with metadata.
-  3) Downloads missing or previously failed files in parallel.
-  4) Periodically checkpoints the manifest to disk.
-  5) Writes a provenance YAML describing API calls and artifacts.
+Fetches hourly CODAR surface-current vector files from Ocean Networks Canada (ONC)
+for a given date range, downloading them in parallel and maintaining a persistent
+manifest of progress.
 
-Key ideas:
-  - Manual thread pool with a task queue for parallel downloads.
-  - A single manifest DataFrame as the source of truth.
-  - One lock to protect all manifest mutations and stats counters.
-  - Idempotent re-runs. Already successful files are skipped.
-  
+Overview
+--------
+This script downloads .tuv vector files for a fixed location (SOGCS) between
+user-specified start and end times. It creates or updates a manifest CSV that
+records each filename attempted and whether the download succeeded or failed.
+Failed or missing files are retried automatically on the next run. A provenance
+YAML file logs API parameters and metadata about the manifest.
 
-Outputs:
-  - <Downloads>/surface-currents/vectors/*.tuv
-  - <Downloads>/surface-currents-metadata/vectors/manifest.csv
-  - <Downloads>/surface-currents-metadata/vectors/provenance.yaml
+Directory Layout
+----------------
+surface-currents/
+    vectors/
+        <ONC_filename>.tuv
+        ...
+surface-currents-metadata/
+    vectors/
+        manifest.csv      # ["timestamp","locationCode","deviceCategoryCode",
+                          #  "deviceCode","filename","path","status"]
+        provenance.yaml   # challenge name, API call details, manifest summary
+
+Key Features
+------------
+- Multithreaded downloads using Python threads
+- Periodic autosave of manifest during long runs
+- Safe to interrupt and resume later
+- Provenance tracking for reproducibility
+
+Environment
+-----------
+- Python 3.11+
+- Environment variable: ``ONC_TOKEN`` must be set to a valid ONC API key
+- Dependencies: ``onc``, ``pandas``, ``pyyaml``, ``python-dotenv``
+
+Usage
+-----
+Run from the repository root or from within ``surface-currents/``:
+
+    export ONC_TOKEN=<your_api_key>
+    python threadpool_vector_fetcher.py \
+        --start 2023-01-01T00:00:00.000Z \
+        --end   2023-01-02T00:00:00.000Z 
+
+Arguments
+---------
+--start     ISO-8601 start timestamp (required)
+--end       ISO-8601 end timestamp (required)
+
+Outputs
+-------
+- ``surface-currents-metadata/manifest.csv``  – records every attempted file and status
+- ``surface-currents-metadata/provenance.yaml`` – documents API parameters and manifest summary
+- Downloaded .tuv files under ``surface-currents/vectors``
+
+Notes
+-----
+If the script stops or fails midway, rerun it with the same date range. The
+manifest ensures that previously completed downloads are skipped, and failed
+ones are retried. To restart from scratch, delete the manifest file before
+rerunning.
 """
 
-from __future__ import annotations
 
+from __future__ import annotations
 import os
-import queue
 import threading
 import time
 import logging
@@ -33,7 +78,8 @@ import argparse
 from pathlib import Path
 from datetime import UTC, datetime
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
 import onc
@@ -145,7 +191,6 @@ class SurfaceCurrentFetcher:
         self.metadata_root.mkdir(parents=True, exist_ok=True)
 
         # Mutable state held by this instance
-        self.download_queue: "queue.Queue[pd.Series | dict]" = queue.Queue()
         self.manifest_df: pd.DataFrame = pd.DataFrame(columns=MANIFEST_COLUMNS)
         self.files_success: int = 0
         self.files_failed: int = 0
@@ -315,35 +360,6 @@ class SurfaceCurrentFetcher:
             else:
                 self.manifest_df = pd.concat([self.manifest_df, pd.DataFrame([new_row_ordered])], ignore_index=True)
 
-    # --- Worker / threads ---
-    def worker(self) -> None:
-        """
-        Worker thread loop.
-
-        Pulls items from the queue until it is empty for 5 seconds.
-        For each item:
-          - attempts the download
-          - updates the manifest and counters under the lock
-          - signals task completion to the queue
-        """
-
-        while True:
-            try:
-                file_info = self.download_queue.get(timeout=5)
-            except queue.Empty:
-                break
-            try:
-                success = self.download_file(file_info)
-                with self.manifest_lock:
-                    self.update_manifest_df(file_info, success)
-                    if success:
-                        self.files_success += 1
-                    else:
-                        self.files_failed += 1
-            finally:
-                # ensure task_done called for every get()
-                self.download_queue.task_done()
-
     def periodic_manifest_save(self, interval: int = 90) -> None:
         """
         Background thread that checkpoints the manifest to disk every interval seconds.
@@ -365,18 +381,31 @@ class SurfaceCurrentFetcher:
 
     # --- Orchestration ---
     def run(self, date_from: str, date_to: str, num_workers: int = 15) -> None:
-        """        
-        Main entry point for a full run over a time window.
-
-        Steps:
-          1) List filenames for the date range.
-          2) Shape them into a DataFrame.
-          3) Load or initialize the manifest.
-          4) Enqueue only missing or previously failed files.
-          5) Start a periodic saver thread for checkpoints.
-          6) Launch worker threads and wait for completion.
-          7) Write final manifest and provenance.
         """
+        Orchestrate the download of surface current vector files over a given time range.
+
+        This is the main entry point for the fetcher. Steps:
+            1) Queries ONC for files in the requested date range.
+            2) Converts requested filenames into a DataFrame.
+            3) Loads Dataframe of historically downloaded files.
+            4) Identifies files that are missing or previously failed.
+            5) Periodically saves the manifest in a background thread to avoid data loss.
+            6) Downloads files in parallel using a thread pool while updating the manifest safely.
+            7) Writes the final manifest and provenance files after all downloads.
+            8) Logs a summary of the run including success/failure counts and runtime.
+
+        Args:
+            date_from (str): Start date (ISO 8601 string, e.g. "2023-01-01T00:00:00.000Z")
+            date_to (str): End date (ISO 8601 string)
+            num_workers (int, optional): Maximum number of threads for parallel downloads. Defaults to 15.
+
+        Notes:
+            - Uses a ThreadPoolExecutor for parallelism instead of a manual thread queue.
+            - Updates to the manifest are protected by a lock to ensure thread safety.
+            - The manifest tracks the status ('success' or 'failed') of each file.
+            - A background thread periodically saves the manifest every 90 seconds.
+        """
+        
         # Initial Log
         start_time = time.time()
         log.info("[Main] ===== Start vector fetcher @ %.2f =====", start_time)
@@ -393,24 +422,30 @@ class SurfaceCurrentFetcher:
         merged = file_info_df.merge(self.manifest_df[["filename", "status"]], on="filename", how="left")
         to_queue = merged[merged["status"].isna() | (merged["status"] == "failed")]
 
-        # Queue missing files
-        for _, row in to_queue.iterrows():
-            self.download_queue.put(row)
-
         # Start thread to periodically update manfiest CSV
         threading.Thread(target=self.periodic_manifest_save, args=(90,), daemon=True).start()
 
-        # Start threads to download file by file
-        threads: List[threading.Thread] = []
-        for _ in range(num_workers):
-            t = threading.Thread(target=self.worker)
-            t.start()
-            threads.append(t)
+        # Start thread pool
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {}
 
-        # Wait for threads to finish
-        self.download_queue.join()
-        for t in threads:
-            t.join()
+            for _, row in to_queue.iterrows(): # Iterate over df of files to download
+                future = executor.submit(self.download_file, row) # Submit the download_file task to the ThreadPoolExecutor
+                futures[future] = row # The future is key, the row (file info) is value
+
+            for future in as_completed(futures): # Look at result as each future completes
+                file_info = futures[future] # Identify file info
+                try:
+                    success = future.result() # True if download suceeded else False
+                except (OSError, ConnectionError, RuntimeError) as e:
+                    log.error("[pool] %s failed with error: %s", file_info["filename"], e)
+                    success = False
+                with self.manifest_lock: # Update manifest
+                    self.update_manifest_df(file_info, success)
+                    if success:
+                        self.files_success += 1
+                    else:
+                        self.files_failed += 1
 
         # Final save of manifest and provenance
         self.write_manifest()
