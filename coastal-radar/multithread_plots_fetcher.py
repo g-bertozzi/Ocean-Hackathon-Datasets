@@ -138,8 +138,8 @@ if not TOKEN:
 PLOT_CLIENT = onc.ONC(TOKEN, outPath=str(DATA_ROOT))
 
 # Globals
-BATCH_MANIFEST: Optional[pd.DataFrame] = None
-DOWNLOAD_QUEUE: "queue.Queue[dict]" = queue.Queue()
+batch_manifest: Optional[pd.DataFrame] = None
+download_queue: "queue.Queue[dict]" = queue.Queue()
 MAX_RETRIES: int = 3
 DEFAULT_LOCATION = "SOGCS"
 DATE_ISOZ = "%Y-%m-%dT%H:%M:%S.000Z"
@@ -152,7 +152,7 @@ PLOT_PARAMS = {
     "deviceCategoryCode": "OCEANOGRAPHICRADAR",
     "dataProductCode": "CODARCD", # manufacturer not quality controlled
     "extension": "png", # for plots
-    "dpo_includeRadials": 0,
+    "dpo_includeRadials": 0, # NOTE: change to 1 to include radials from all stations
 }
 
 # ==============================
@@ -166,10 +166,10 @@ def utc_now_isoz() -> str:
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 def manifest_to_prov():
-    """ Writes a provenance to yaml according to the final BATCH_MANIFEST. """
-    global BATCH_MANIFEST
+    """ Writes a provenance to yaml according to the final batch_manifest. """
+    global batch_manifest
 
-    downloaded_files = int(BATCH_MANIFEST.loc[BATCH_MANIFEST["downloaded"] == True, "file_count"].sum())
+    downloaded_files = int(batch_manifest.loc[batch_manifest["downloaded"] == True, "file_count"].sum())
     
     prov = {
         "challenge": "surface-currents",
@@ -180,7 +180,7 @@ def manifest_to_prov():
         "file_count": downloaded_files 
     }
 
-    for _, row in BATCH_MANIFEST.iterrows():  # loop properly over DataFrame rows
+    for _, row in batch_manifest.iterrows():  # loop properly over DataFrame rows
         batch = row.to_dict()
         cur_req_id = batch['dpRequestId']
         cur_run_id = batch['runIds']
@@ -280,17 +280,17 @@ def build_quartermonth_batches(year: int) -> pd.DataFrame:
 
 def load_or_init_batch_manifest(year: int) -> None:
     """ 
-    Points global BATCH_MANIFEST to the exisiting csv file df or a new df. 
+    Points global batch_manifest to the exisiting csv file df or a new df. 
     Schema: [dpRequestId: int, runIds: int or None, batch_id: str, start: iso str , end: iso str, last_call_ran: str, call_status: str, file_count: int, downloaded: bool]
     """
-    global BATCH_MANIFEST
+    global batch_manifest
 
     if BATCH_MANIFEST_PATH.exists():
-        BATCH_MANIFEST = pd.read_csv(BATCH_MANIFEST_PATH)
+        batch_manifest = pd.read_csv(BATCH_MANIFEST_PATH)
 
         # Re make requestIds for all rows wehere downloaded == False -- also reset last_call_ran, call_status, runIds
-        for idx, row in BATCH_MANIFEST.iterrows():
-            if row["downloaded"] != True: 
+        for idx, row in batch_manifest.iterrows():
+            if not row["downloaded"]: 
                 re_start = row["start"]
                 re_end = row["end"]
 
@@ -302,10 +302,10 @@ def load_or_init_batch_manifest(year: int) -> None:
 
                 req_id = make_dp_request(filters=params)
 
-                BATCH_MANIFEST.loc[idx, ["dpRequestId", "runIds", "last_call_ran", "call_status"]] = [req_id, None, "make_dp_request", "complete"]
+                batch_manifest.loc[idx, ["dpRequestId", "runIds", "last_call_ran", "call_status"]] = [req_id, None, "make_dp_request", "complete"]
 
     else:
-        BATCH_MANIFEST = build_quartermonth_batches(year=year)
+        batch_manifest = build_quartermonth_batches(year=year)
 
 def make_dp_request(filters: dict) -> int:
     """Make data product request. Returns data product request id."""
@@ -321,9 +321,9 @@ def make_dp_request(filters: dict) -> int:
 
 def save_batch_manifest():
     """Write batch manifest to disk (call after finishing a batch)."""
-    global BATCH_MANIFEST
+    global batch_manifest
     with batch_lock:
-        BATCH_MANIFEST.to_csv(BATCH_MANIFEST_PATH, index=False)
+        batch_manifest.to_csv(BATCH_MANIFEST_PATH, index=False)
 
 def cart_complete(dp_request_id: int) -> bool:
     """Returns True if cart is closed (0 = closed, 1 = open)."""
@@ -334,14 +334,14 @@ def cart_complete(dp_request_id: int) -> bool:
 def run_dp(dp_request_id: int) -> list[int]:
     """ 
     Takes dp_request_id from requestDataProduct and returns run_ids. 
-    Updates BATCH_MANIFEST with runIds, last_call_ran, call_status.
+    Updates batch_manifest with runIds, last_call_ran, call_status.
 
     NOTE: No error handling- either returns the Id or an errors
     """
  
     log.info("[run_dp] trying to get runIds for requestId %s at %s.", dp_request_id, datetime.now().strftime(HUMAN))
 
-    global BATCH_MANIFEST
+    global batch_manifest
 
     response = PLOT_CLIENT.runDataProduct(dpRequestId=dp_request_id, waitComplete=True)
     raw = response.get("runIds")
@@ -355,10 +355,10 @@ def run_dp(dp_request_id: int) -> list[int]:
     num_files = response.get("fileCount")
 
     with batch_lock: # update batch manifest last_call_ran
-        BATCH_MANIFEST.loc[BATCH_MANIFEST["dpRequestId"] == dp_request_id, "runIds"] = run_ids
-        BATCH_MANIFEST.loc[BATCH_MANIFEST["dpRequestId"] == dp_request_id, "last_call_ran"] = "runDataProduct"
-        BATCH_MANIFEST.loc[BATCH_MANIFEST["dpRequestId"] == dp_request_id, "call_status"] = call_status
-        BATCH_MANIFEST.loc[BATCH_MANIFEST["dpRequestId"] == dp_request_id, "file_count"] = num_files
+        batch_manifest.loc[batch_manifest["dpRequestId"] == dp_request_id, "runIds"] = run_ids
+        batch_manifest.loc[batch_manifest["dpRequestId"] == dp_request_id, "last_call_ran"] = "runDataProduct"
+        batch_manifest.loc[batch_manifest["dpRequestId"] == dp_request_id, "call_status"] = call_status
+        batch_manifest.loc[batch_manifest["dpRequestId"] == dp_request_id, "file_count"] = num_files
     
     save_batch_manifest()
     return run_ids
@@ -368,13 +368,13 @@ def download_dp(run_ids: int, dp_request_id: int):
     
     log.info("[download_dp] trying to download for requestId %s runIds %s at {datetime.now().strftime(HUMAN)}.", dp_request_id, run_ids)
 
-    global BATCH_MANIFEST
+    global batch_manifest
 
-    response = PLOT_CLIENT.downloadDataProduct(runId=run_ids, 
-                                            maxRetries=3, 
-                                            downloadResultsOnly=False, 
-                                            includeMetadataFile=True, 
-                                            overwrite=False)
+    PLOT_CLIENT.downloadDataProduct(runId=run_ids,
+                                    maxRetries=3,
+                                    downloadResultsOnly=False,
+                                    includeMetadataFile=True,
+                                    overwrite=False)
 
     # Poll until cart closes
     while cart_complete(dp_request_id=dp_request_id) is False:
@@ -385,9 +385,9 @@ def download_dp(run_ids: int, dp_request_id: int):
 
     with batch_lock:
         # update batch manifest last_call_ran
-        BATCH_MANIFEST.loc[BATCH_MANIFEST["runIds"] == run_ids, "last_call_ran"] = "downloadDataProduct"
-        BATCH_MANIFEST.loc[BATCH_MANIFEST["runIds"] == run_ids, "call_status"] = "complete"
-        BATCH_MANIFEST.loc[BATCH_MANIFEST["runIds"] == run_ids, "downloaded"] = True
+        batch_manifest.loc[batch_manifest["runIds"] == run_ids, "last_call_ran"] = "downloadDataProduct"
+        batch_manifest.loc[batch_manifest["runIds"] == run_ids, "call_status"] = "complete"
+        batch_manifest.loc[batch_manifest["runIds"] == run_ids, "downloaded"] = True
     
     save_batch_manifest()
 
@@ -396,7 +396,7 @@ def download_dp(run_ids: int, dp_request_id: int):
 def worker() -> None:
     """
     Each worker:
-    - Pulls a batch dict from DOWNLOAD_QUEUE
+    - Pulls a batch dict from download_queue
     - Tries runDataProduct (up to MAX_RETRIES)
     - Tries downloadDataProduct (up to MAX_RETRIES)
     - Always calls task_done() for each dequeued item
@@ -404,7 +404,7 @@ def worker() -> None:
     while True:
         # 1) Pull from queue (or exit when empty)
         try:
-            batch_info = DOWNLOAD_QUEUE.get(timeout=5)  # -> dict with keys incl. 'dpRequestId'
+            batch_info = download_queue.get(timeout=5)  # -> dict with keys incl. 'dpRequestId'
         except queue.Empty:
             break
 
@@ -419,9 +419,11 @@ def worker() -> None:
                 try:
                     run_ids = run_dp(dp_request_id=req_id)  # expected list[int]
                     cur_run_id = int(run_ids[0])
-                    log.info("[worker] runDataProduct OK for requestId=%s (runId=%s)", req_id, cur_run_id)
+                    log.info("[worker] runDataProduct OK for requestId=%s (runId=%s)",
+                             req_id,
+                             cur_run_id)
                     break
-                except Exception as exc:
+                except (ConnectionError, RuntimeError, OSError) as exc:
                     log.error(
                         "[worker] runDataProduct failed (attempt %d/%d\nfor requestId=%s: %s",
                         attempt,
@@ -437,7 +439,7 @@ def worker() -> None:
                 continue  # go to finally -> task_done()
 
             # Always log manifest snapshot
-            # log.info(f"[worker] manifest after run_dp for requestId={req_id}\n{BATCH_MANIFEST}")
+            # log.info(f"[worker] manifest after run_dp for requestId={req_id}\n{batch_manifest}")
 
             # 3) Download data product (retry)
             success = False
@@ -445,9 +447,11 @@ def worker() -> None:
                 try:
                     download_dp(run_ids=cur_run_id, dp_request_id=req_id)
                     success = True
-                    log.info("[worker] downloadDataProduct OK for requestId=%s (runId=%s)", req_id, cur_run_id)
+                    log.info("[worker] downloadDataProduct OK for requestId=%s (runId=%s)",
+                             req_id,
+                             cur_run_id)
                     break
-                except Exception as exc:
+                except (ConnectionError, RuntimeError, OSError) as exc:
                     log.error("[worker] download_dp failed (attempt %d/%d\nfor requestId=%s: %s",
                             attempt,
                             MAX_RETRIES,
@@ -461,30 +465,30 @@ def worker() -> None:
                 log.error("[worker] download_dp failed permanently for requestId=%s", req_id)
 
             # Always log manifest snapshot
-            log.info("[worker] manifest after download_dp for requestId=%s\n%s", req_id,BATCH_MANIFEST)
+            log.info("[worker] manifest after download_dp for requestId=%s\n%s", req_id,batch_manifest)
 
         finally:
             # Always mark the dequeued item as processed to avoid deadlocks
-            DOWNLOAD_QUEUE.task_done()
+            download_queue.task_done()
 
 def main():
     # A. Initial Logging
     start_time = datetime.now()  # start timer
     log.info("[main] ===== BATCH START ===== at %s.", ts_to_isoz(start_time))
 
-    global BATCH_MANIFEST, DOWNLOAD_QUEUE
+    global batch_manifest, download_queue
     cfg = parse_args()
 
     # 1. Init batch manifest
     load_or_init_batch_manifest(year=cfg.year)
-    log.info(BATCH_MANIFEST)
+    log.info(batch_manifest)
 
     # 2. Build download queue -- do we need to check current request vs historical batch?
-    for _, row in BATCH_MANIFEST.iterrows():
+    for _, row in batch_manifest.iterrows():
         if not row["downloaded"]: # Enqueue all batches not yet downloaded
-            DOWNLOAD_QUEUE.put(row.to_dict())
+            download_queue.put(row.to_dict())
             log.info("[main] queueing dpRequestId: %s, start: %s, end: %s", row['dpRequestId'], row['start'], row['end'])
-    
+
     # 3. Start threads
     num_workers = 15
     threads = []
@@ -496,7 +500,7 @@ def main():
         threads.append(t)
 
     # 4. Finish threads
-    DOWNLOAD_QUEUE.join() # Wait for all tasks in the queue to be processed - signaled by task_done() in worker
+    download_queue.join() # Wait for all tasks in the queue to be processed - signaled by task_done() in worker
 
     # Main thread waits for all threads to finish
     for t in threads:
@@ -508,10 +512,10 @@ def main():
     end_time = datetime.now()
     elapsed_seconds = (end_time - start_time).total_seconds()
 
-    total_batches = len(BATCH_MANIFEST)
-    success_batches = len(BATCH_MANIFEST[BATCH_MANIFEST["downloaded"] is True])
-    failed_batches = len(BATCH_MANIFEST[BATCH_MANIFEST["downloaded"] is False])
-    files_downloaded = BATCH_MANIFEST.loc[BATCH_MANIFEST["downloaded"] is True, "file_count"].sum()
+    total_batches = len(batch_manifest)
+    success_batches = len(batch_manifest[batch_manifest["downloaded"]])
+    failed_batches = len(batch_manifest[~batch_manifest["downloaded"]])
+    files_downloaded = int(batch_manifest.loc[batch_manifest["downloaded"], "file_count"].sum())
 
     log.info("\n===== BATCH DOWNLOAD SUMMARY =====")
     log.info("Total batches processed : %d", total_batches)
