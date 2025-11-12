@@ -106,7 +106,7 @@ def parse_args() -> Config:
     return Config(year=args.year)
 
 # Logging
-def setup_logging():
+def setup_logging() -> None:
     logging.basicConfig(
         level=logging.INFO,  # change to DEBUG for detailed tracing
         format="%(asctime)s %(levelname)s %(message)s",
@@ -132,22 +132,22 @@ DATA_ROOT.mkdir(parents=True, exist_ok=True)
 METADATA_ROOT.mkdir(parents=True, exist_ok=True)
 
 # ONC client
-TOKEN = os.getenv("ONC_TOKEN")
+TOKEN: str  = os.getenv("ONC_TOKEN")
 if not TOKEN:
     raise RuntimeError("ONC_TOKEN is not set. Export your ONC API key before running.")
-PLOT_CLIENT = onc.ONC(TOKEN, outPath=str(DATA_ROOT))
+PLOT_CLIENT: onc.ONC = onc.ONC(TOKEN, outPath=str(DATA_ROOT))
 
 # Globals
 batch_manifest: Optional[pd.DataFrame] = None
 download_queue: "queue.Queue[dict]" = queue.Queue()
 MAX_RETRIES: int = 3
-DEFAULT_LOCATION = "SOGCS"
-DATE_ISOZ = "%Y-%m-%dT%H:%M:%S.000Z"
-HUMAN = "%Y-%m-%d %H:%M:%S"
+DEFAULT_LOCATION: str = "SOGCS"
+DATE_ISOZ: str = "%Y-%m-%dT%H:%M:%S.000Z"
+HUMAN: str = "%Y-%m-%d %H:%M:%S"
 
-batch_lock = threading.Lock()
+batch_lock: threading.Lock = threading.Lock()
 
-PLOT_PARAMS = {
+PLOT_PARAMS: dict[str, int | str] = {
     "locationCode": DEFAULT_LOCATION,
     "deviceCategoryCode": "OCEANOGRAPHICRADAR",
     "dataProductCode": "CODARCD", # manufacturer not quality controlled
@@ -241,8 +241,8 @@ def build_quartermonth_batches(year: int) -> pd.DataFrame:
         (8, 15),   # Q2
         (16, 23),  # Q3
         (24, None) # Q4 handled specially
-    ] 
-    
+    ]
+ 
     for month in range(1,13):
         for q, (start_day, end_day) in enumerate(quarter_days, start=1):
             start = pd.Timestamp(year=year, month=month, day=start_day, tz="UTC")
@@ -288,7 +288,7 @@ def load_or_init_batch_manifest(year: int) -> None:
     if BATCH_MANIFEST_PATH.exists():
         batch_manifest = pd.read_csv(BATCH_MANIFEST_PATH)
 
-        # Re make requestIds for all rows wehere downloaded == False -- also reset last_call_ran, call_status, runIds
+        # Re make requestIds for all rows where downloaded == False; also reset last_call_ran, call_status, runIds
         for idx, row in batch_manifest.iterrows():
             if not row["downloaded"]: 
                 re_start = row["start"]
@@ -310,10 +310,10 @@ def load_or_init_batch_manifest(year: int) -> None:
 def make_dp_request(filters: dict) -> int:
     """Make data product request. Returns data product request id."""
     response = PLOT_CLIENT.requestDataProduct(filters=filters)
-    dpRequestId = response.get("dpRequestId")
-    log.info("[requestDataProduct] dpRequestId: %s", dpRequestId)
+    dp_request_id = response.get("dpRequestId")
+    log.info("[requestDataProduct] dpRequestId: %s", dp_request_id)
 
-    return dpRequestId
+    return dp_request_id
 
 # ==============================
 # Thread workers
@@ -338,8 +338,10 @@ def run_dp(dp_request_id: int) -> list[int]:
 
     NOTE: No error handling- either returns the Id or an errors
     """
- 
-    log.info("[run_dp] trying to get runIds for requestId %s at %s.", dp_request_id, datetime.now().strftime(HUMAN))
+
+    log.info("[run_dp] trying to get runIds for requestId %s at %s.",
+             dp_request_id,
+             datetime.now().strftime(HUMAN))
 
     global batch_manifest
 
@@ -349,7 +351,10 @@ def run_dp(dp_request_id: int) -> list[int]:
         raise ValueError(f"Missing runIds in response: {response}")
     run_ids = raw if isinstance(raw, list) else [raw]
 
-    log.info("[run_dp] got runIds %s for requestId %s at %s.", run_ids, dp_request_id, datetime.now().strftime(HUMAN))
+    log.info("[run_dp] got runIds %s for requestId %s at %s.",
+             run_ids,
+             dp_request_id,
+             datetime.now().strftime(HUMAN))
 
     call_status = response.get("status") # Get status of runDataProduct -- waitComplete should wait for status == 'complete'
     num_files = response.get("fileCount")
@@ -359,14 +364,17 @@ def run_dp(dp_request_id: int) -> list[int]:
         batch_manifest.loc[batch_manifest["dpRequestId"] == dp_request_id, "last_call_ran"] = "runDataProduct"
         batch_manifest.loc[batch_manifest["dpRequestId"] == dp_request_id, "call_status"] = call_status
         batch_manifest.loc[batch_manifest["dpRequestId"] == dp_request_id, "file_count"] = num_files
-    
+
     save_batch_manifest()
     return run_ids
 
-def download_dp(run_ids: int, dp_request_id: int):
+def download_dp(run_ids: int, dp_request_id: int) -> bool:
     """Takes dp_request_id from requestDataProduct and run_ids from runDataProduct and returns True unless error is raised by API."""
     
-    log.info("[download_dp] trying to download for requestId %s runIds %s at {datetime.now().strftime(HUMAN)}.", dp_request_id, run_ids)
+    log.info("[download_dp] trying to download for requestId %s runIds %s at %s.",
+             dp_request_id,
+             run_ids,
+             datetime.now().strftime(HUMAN))
 
     global batch_manifest
 
@@ -377,11 +385,14 @@ def download_dp(run_ids: int, dp_request_id: int):
                                     overwrite=False)
 
     # Poll until cart closes
-    while cart_complete(dp_request_id=dp_request_id) is False:
+    while not cart_complete(dp_request_id=dp_request_id):
         time.sleep(3)
         log.info("[download_dp] requestId %s downloading in progess.", dp_request_id)
         
-    log.info("[download_dp] downloaded runIds %s at {datetime.now().strftime(HUMAN)}.", run_ids)
+    log.info("[download_dp] downloaded runIds %s at %s}.",
+             run_ids,
+             datetime.now().strftime(HUMAN),
+            )
 
     with batch_lock:
         # update batch manifest last_call_ran
