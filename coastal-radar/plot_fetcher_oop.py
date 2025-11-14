@@ -80,7 +80,7 @@ class Config:
     - threads: Number of parallel threads
     """
     year: int
-    download_dir: Optional[Path] = None
+    download_dir: Optional[Path] = Path.home() / "Downloads"
     threads: int = 15
     debug: bool = False 
 
@@ -457,8 +457,8 @@ def main():
     token = os.getenv("ONC_TOKEN")
     if not token:
         raise RuntimeError("ONC_TOKEN is not set")
-    data_root = cfg.download_dir / "surface-currents" / "plots_{cfg.year}"
-    metadata_root = cfg.download_dir / "surface-currents-metadata" / "plots_{cfg.year}"
+    data_root = cfg.download_dir / "surface-currents" / f"plots_{cfg.year}"
+    metadata_root = cfg.download_dir / "surface-currents-metadata" / f"plots_{cfg.year}"
     client = onc.ONC(token, outPath=str(data_root))
     fetcher = PlotFetcher(client, data_root, metadata_root, threads=cfg.threads)
     fetcher.run(cfg.year)
