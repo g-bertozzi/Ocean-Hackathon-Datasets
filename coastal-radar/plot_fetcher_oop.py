@@ -1,9 +1,9 @@
 """
 CODAR Surface Currents Plot Fetcher
 
-This module provides functionality to download CODAR surface current plots from Ocean Networks Canada (ONC) 
-for a specified year. It organizes downloads into discrete quarter-month batches, tracks progress, 
-and provides robust error handling and retry mechanisms.
+This module provides functionality to download CODAR surface current plots from Ocean Networks Canada
+for a specified year. It organizes downloads into quarter-month batches, tracks progress, and provides 
+error handling and retry mechanisms.
 
 Features:
 - Automatically divides the specified year into quarter-month batches and submits data product requests.
@@ -18,12 +18,12 @@ Usage:
 
 Options:
 - year: Required. The year of plots to download.
-- download_dir: Optional. Base directory to store downloaded plots and metadata (default: ~/Downloads).
+- download_dir: Optional. Base directory to store downloaded plots and metadata (default: Downloads).
 - threads: Optional. Number of parallel download threads (default: 15).
 
 Notes:
 - Each year's data is stored in a separate directory to prevent conflicts with previously downloaded years.
-- Manifest and provenance files allow the fetcher to resume incomplete downloads or track historical progress.
+- Manifest file allow the fetcher to resume incomplete downloads.
 - Enabling DEBUG logging provides additional information on API calls, batch processing, and error details.
 
 Author: Grace Bertozzi
@@ -203,7 +203,6 @@ class PlotBatch:
         self.call_status = "complete"
 
 # PlotFetcher Class
-
 class PlotFetcher:
     """
     Coordinates fetching CODAR plot batches:
@@ -267,7 +266,7 @@ class PlotFetcher:
         with open(self.provenance_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(prov, f, default_flow_style=False, sort_keys=False)
 
-    # Manifest handling
+    # Manifest
     def load_or_init_manifest(self, year: int):
         """
         Initialize batch_manifest according to existing CSV manifest of historical download attempts.
@@ -294,7 +293,6 @@ class PlotFetcher:
             df = pd.DataFrame([b.to_dict() for b in self.batch_manifest])
             df.to_csv(self.batch_manifest_path, index=False)
 
-    # Batch creation
     def build_quartermonth_batches(self, year: int) -> list[PlotBatch]:
         """
         Initializes PlotBatch objects for each quarter-month of the specified year, 
@@ -317,10 +315,6 @@ class PlotFetcher:
         return batches
 
     # API calls
-    
-    # ----------------------
-    # API calls
-    # ----------------------
     def make_dp_request(self, start_iso: str, end_iso: str) -> int:
         """Return data product request id from requestDataProduct."""
         log.debug("Requesting data product from %s to %s", start_iso, end_iso)
@@ -452,7 +446,7 @@ def main():
     - Run fetcher
     """
     cfg = parse_args()
-    log.setLevel(logging.DEBUG if cfg.debug else logging.INFO)  # <-- THIS LINE
+    log.setLevel(logging.DEBUG if cfg.debug else logging.INFO)
 
     token = os.getenv("ONC_TOKEN")
     if not token:
