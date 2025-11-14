@@ -14,17 +14,20 @@ Features:
 - Provides detailed logging for progress monitoring and debugging, with optional DEBUG mode for verbose output.
 
 Usage:
-    python fetch_surface_currents.py --year 2024 --download_dir /path/to/data --threads 10
+    python fetch_surface_currents.py --year 2024 --download_dir /path/to/data --threads 10 --debug
 
-Options:
+Command Line Input Options:
 - year: Required. The year of plots to download.
 - download_dir: Optional. Base directory to store downloaded plots and metadata (default: Downloads).
 - threads: Optional. Number of parallel download threads (default: 15).
+- debug: Optional. Provides additional information on API calls, batch processing, and error details.
 
 Notes:
 - Each year's data is stored in a separate directory to prevent conflicts with previously downloaded years.
-- Manifest file allow the fetcher to resume incomplete downloads.
-- Enabling DEBUG logging provides additional information on API calls, batch processing, and error details.
+- Manifest file allow the script to resume incomplete downloads.
+- Ensure the ONC_TOKEN environment variable is set, e.g.:
+    export ONC_TOKEN="your_token_here"  (Linux/macOS)
+    set ONC_TOKEN=your_token_here       (Windows)
 
 Author: Grace Bertozzi
 """
