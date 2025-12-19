@@ -1,36 +1,64 @@
 """
 Multithreaded ONC Still Image Downloader
 
-This script downloads still images from Ocean Networks Canada (ONC) for a given 
-location and time period. It uses the ONC API, handles batching, retries, and 
-multithreaded downloads. A manifest (CSV) tracks download status, and a 
-provenance file (YAML) records API calls.
+This module provides functionality to download still images from Ocean Networks Canada (ONC)
+video camera feeds for a specified location and time period. It organizes downloads into
+batches, handles retries, and provides error handling and manifest tracking.
 
-Key features:
-- Manifest ensures continuity across runs and after interrupts
-- Mid-run interrupts are recoverable
-- Supports retry logic for failed files
-- Metadata and provenance are saved for reproducibility
+Features:
+- Queries ONC for video camera still images (.jpg) within a specified time window.
+- Builds a manifest of expected files with metadata (timestamp, location, device, status).
+- Downloads missing or previously failed files in parallel using multiple threads.
+- Periodically checkpoints the manifest to disk to limit data loss on interruption.
+- Maintains a manifest (CSV) and provenance (YAML) for reproducibility and audit purposes.
+- Supports idempotent re-runs: already successful files are skipped.
+- Batches large requests (6-month windows) to respect API response limits (max 100,000 lines).
+- Provides detailed logging for progress monitoring and debugging.
+
+Usage:
+    python fetch_shore_station_images.py
+
+Command Line Input Options:
+- None. Configuration (location, date range, number of threads) is set in the main() function.
+  Edit the script to modify LOCATION_CODE, date range (start/end), or num_workers.
+
+Output Structure:
+    Downloads/
+        boat-traffic/{LOCATION_CODE}/
+            AXISQ6074EPTZACCC8EACA584_{YYYYMMDDTHHMMSS.sssZ}.jpg
+            ...
+        boat-traffic-metadata/{LOCATION_CODE}/
+            manifest.csv
+            provenance.yaml
+
+Notes:
+- Manifest file allows the script to resume incomplete downloads.
+- A single manifest DataFrame serves as the source of truth for all file states.
+- One lock protects all manifest mutations and stats counters to ensure thread safety.
+- Batches are processed sequentially (6-month windows), with worker threads operating within each batch.
+- Manual thread pool with a task queue for efficient parallel downloads within batches.
+- Large time ranges (e.g., full year) are split into 6-month periods to avoid hitting API response limits.
+- Ensure the ONC_TOKEN environment variable is set, e.g.:
+    export ONC_TOKEN="your_token_here"  (Linux/macOS)
+    set ONC_TOKEN=your_token_here       (Windows)
+
+Author: Grace Bertozzi
 """
 
-
 # Import SDKs
-import random
-import threading
-import yaml
 import os
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+import random
+import threading
+import time
+import queue
+import yaml
 import pandas as pd
 from dotenv import load_dotenv
 import onc
-import time
-import queue
 
-# ==============================
 # Setup
-# ==============================
-
 load_dotenv()
 
 # --- Project-root based paths ---
@@ -76,9 +104,7 @@ PROV_INFO = {
     }
 }
 
-# ==============================
 # Functions
-# ==============================
 
 # def setup_paths() -> dict:
 #     """Ensure required directories exist. Call once at runtime, not at import."""
@@ -212,7 +238,7 @@ def filenames_to_file_info(filenames: list[str], locationCode: str) -> pd.DataFr
     Output dataframe schema: [timestamp: pd.datetime, locationCode: str, deviceCategoryCode: str, deviceCode: str, filename: str, path: str -- local path from data root]
     """
 
-    print(f"[filenames_to_file_info] Creating information table for files in this call.")
+    print("[filenames_to_file_info] Creating information table for files in this call.")
     print()
 
     # Create list of dictionaries: list = dataframe, each dict = a row
